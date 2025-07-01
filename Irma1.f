@@ -1,71 +1,89 @@
-        program Traff_all
-        
-c ... Title: An agent based framework to examine the hurricane evacuation dynamics
-c     Authors: Austin R. Harris (University of Wisconsin-Milwaukee), Dr. Paul J. Roebber (UWM), 
-c                      Dr. Rebecca E. Morss (National Center for Atmospheric Research)
+        program Traff_all  
 
-c... Model overview
-c     This program will ingest "light system" forecast files (excel inputs). The forecasts will be used to make 
-c     evacuation orders by emergency management and evacuation decisions by households using an agent-based model. 
-c     For those that decide to evacuate, the program -- also an agent-based model -- will determine an evacuation destination
-c     and move the traffic along the interstates. 
+c     Model purpose
+c     Called FLEE (Forecasting Laboratory for Exploring the Evacuation-system), this agent-based model simulates the evacuation response to hurricane forecasts. 
+c     In particular, it serves as a virtual laboratory to explore the dynamics of the hurricane forecast-warning-evacuation system 
 
-c.   The inputs are written for Hurricane Irma. 
+c     Model inputs
+c     Forecasts- Every 6 hours in the model, this program will ingest forecast files (excel inputs e.g., ADV26), located in the same folder as this .f file.
+c     The files contain the wind, surge, and rain risk across the model, presented on a 0-10 scale. Collectively, they simulate an evolving hurricane forecast scenario. 
+c     Risk files are seperately generated from archived forecasts from the National Hurricane Center including the hurricane's track, intensity, and the cone of uncertainty. 
 
+c     Built environment - A second input is the npop.txt file. This has information on the "people" side of the model, such as how many people reside in the model and where. Other info includes 
+c     the amount of time it takes to evacuate each grid cell (clerance times), inundation potential (based on NHC storm surge data), and the average characteristics of people in a grid cell
+c     (based on social vulnerability data form the CDC). These variables are static, meaning they are only defined once.  
+
+c     The virtual world
+c     A NXW x NYH grid of tile (8x20) representing the N-S axis of the Florida peninsula. The population, based on numbers in the
+c     npop file, are geographically distributed in such a way to simulate the actual population of Florida. For example, the population centers of Miami and Tampa are
+c     distinguishable in the model. To create this virtual world, geospatial population and social datasets were projected onto the agent-based model grid using GIS. 
+c     While idealized, it makes the FLEE's virtual world "Florida-like" 
+
+c     Agents
+c     There are three primary types of agents in FLEE. 
+
+c     (1) Emergency manager agents. For each grid cell, there is one emergency manager agent who make a  
+c     decision about whether or not to issue evacuation order for their grid cell (and when). That decision is revisited every hour, based on the forecast risk at its grid cell, 
+c     the estimated time of arrival of the hurricane, and their clearance times (estimated amount of time it takes to evacuate that grid cell). 
+
+c     (2) Household agents. Each household (units of 4 people) has a unique set of characteristics known to influence evacuation decision-making. These include (a) forecast risk, 
+c     (b) evacuation orders, (c) mobile home ownership, (d) car ownership, and (e) the age of the household. For c-e, household characteristics are stochastically assigned (only once, in the subroutine)
+c     in this code based on the average grid cell-level characteristcs in the npop file. 
+c     
+c     Household agents make decisions about if they should evacuate, a decision they revisit every 30 minutes. 
+c     That decision process is located in the subroutine at the bottom of the code. 
+c     If a household decides to evacuate, they also decide where to go (a decision made once and immediately afterward). They also decide when to leave, a decision that's influenced by the storms arrival time. 
+c     These decision making processes are rooted in empirical social science studies. 
+
+c     (3) Vehicle agents. If a household decides to evacuate, they become a vehicle agent. These agents are initially placed onto an open spot on a nearby road. 
+c     Vehicles accelerate when they can, maintain speed at the speed limit or when behind another car, and slow down if they must.  
+
+c     Traffic model
 c     The evacuation traffic model dumps out the state at every minute of
-c     integration (50 time steps using an increment of 1.2 sec). The decision-making aspects of the model run every 30s. 
-c
-c     Here we have a NXW x NYH grid of tile (4x10) s. For Nx=4, each tileX from 1-2 is on
-c     the west side with coast at X=1 and 3-4 is on the east side with coast at X=4. 
-c     Ny = 10. In this way the grid  represents the N-S axis of the Florida peninsula
+c     integration (50 time steps using an increment of 1.2 sec). This high-res aspect of the model is needed to simulate vehicle-vehicle interactions
+c     which can generate traffic jams. 
+
+c     Built environment 
+c     As part of the Florida-like virtual world, idealized road networks are placed in between grid cells, some moving E-W, others moving S-N. 
 
 c ... N/S Interstates:
-c     At the junction of X=4 is a N/S -running Interstate (5 lanes) extending from Y=1-NY where 1 is south.
-c     At the junction of X=1 is an identential N/S running, 5 lane interstate extending to NY=10
+c     At the junction of X=8 (east Florida) is a N/S -running Interstate (5 lanes) extending from Y=1-NY where 1 is south. This is like I-95 running along FL's east coast.
+c     At the junction of X=1 (west Florida) is an identential N/S running, 5 lane interstate extending to NY=20. This is like I-75 on Florida's west coast. 
 
 c ... E/W Interstates
-c     At the base of the grid Y=1 is an E-W running Interstate (3 lanes each way). 
-c.    At the middle of the grid Y=5 is another E-W running Interstate (3 lanes each way). 
+c     At the base of the grid Y=1 is an E-W running Interstate (3 lanes each way). These connect the two outer interstates/ 
+c.    At the middle of the grid Y=10 is another E-W running Interstate (3 lanes each way). This connects Tampa with Orlando. 
 
 c ... E/W Highways 
 c.    In between each grid cell are E-W running higways (2-lanes) that  joins the traffic from the W-E routes
 c     to the N route.
 
-c     This code computes the traffic in each of these tiles, where the route
-c     consists of NCELL=3500 road-lengths (road length = 7.5m so NCELL = 26.25 km)
-c     This means the grid is about 110 km wide and 262 km tall -- roughly FL panhandle-like. 
+c     Each highway consists of NCELL=3500 road-lengths (road length = 7.5m so NCELL = 26.25 km)
+c     This means the grid is about 110 km wide and 262 km tall -- roughly FL panhandle-like.  
 
-c    We have N agents corresponding to total population in each tile. Largest tile pop is 
-c    2,500,000 (TB) and overall population is 16,390,000 so we would need that number of agents 
-c    if each are tracked individually.
+c     Setting initial parameters and the sizes of arrays
+c     We set the interstate speed limit (nVMX) at 5 road-lengths per time step (1.2 s) which is about 70 mph. 
+c     We set the highway speed limit (nVMX2) to 3 road-lengths per time step (1.2s) which is about 45 mph
+c     We place random accidents (RA) on the major interstates every 2.7 hours or so. 
+c     About 35% of cars will exhibit some "chaotic" or random movements (RP) which can trigger abrubt slowdowns/jams
 
-c   We can combine populations into households of 4 that behaves collectively.
-c   Then total number of tracking groups would be about 4097500.  
-
-c... Parameter space
-c   We set the interstate speed limit (nVMX) at 5 road-lengths per time step (1.2 s) which is about 70 mph. 
-c   We set the highway speed limit (nVMX2) to 3 road-lengths per time step (1.2s) which is about 45 mph
-c   We place random accidents (RA) on the major interstates every 2.7 hours or so. 
-c   About 35% of cars will exhibit some "chaotic" or random movements (RP) which can trigger abrubt slowdowns/jams
-
-       PARAMETER (NCELLX=3500,NCELLY=35000,NX=4,NY=10,nVMX=5,nVMX2=3,
+       PARAMETER (NCELLX=1750,NCELLY=35000,NX=8,NY=20,nVMX=5,nVMX2=3,
      *   RLC=7.5,DT=1.2,RP=0.05,RA=0.00005)
-c
-c ... give initial population for the cells
-c ... for the right (east) interstate
+
+c ... for the right (east) interstate....5 indicates the number of possible lanes     
        integer*4 TTime,iseed
-       integer car(NCELLY,5),vel(NCELLY,5),lag(NCELLY,5),ident(NCELLY,5)
+       integer car(NCELLY,5),vel(NCELLY,5),lag(NCELLY,5)
        integer car2(NCELLY,5),vel2(NCELLY,5),ident2(NCELLY,5)
        integer carp2(NCELLY,5),carp(NCELLY,5),rt2(NCELLY,5)
        integer twoe(NCELLY,5),exit2(NCELLY,5),exite(NCELLY,5)
-       integer two2e(NCELLY,5)
+       integer two2e(NCELLY,5),ident(NCELLY,5)
 c ... for the left (west) interstate
        integer carX(NCELLY,5),velX(NCELLY,5),lagX(NCELLY,5)
        integer car2X(NCELLY,5),vel2X(NCELLY,5),ident2X(NCELLY,5)
        integer carp2X(NCELLY,5),identX(NCELLY,5),carpX(NCELLY,5)
        integer one2w(NCELLY,5),two2w(NCELLY,5),exit2w(NCELLY,5)
        integer onew(NCELLY,5),twow(NCELLY,5),exitw(NCELLY,5)
-c ... for the bottom interstate (e running)
+c ... for the bottom interstate (e running)... 3 indicates the number of possible lanes
        integer carse(NX,NY,NCELLX,3),velse(NX,NY,NCELLX,3)
        integer lagse(NX,NY,NCELLX,3),identse(NX,NY,NCELLX,3)
        integer car2se(NX,NY,NCELLX,3),vel2se(NX,NY,NCELLX,3)
@@ -82,7 +100,7 @@ c ... for the bottom interstate (w running)
        integer carp2sw(NX,NY,NCELLX,3),carpsw(NX,NY,NCELLX,3)      
        integer onesw(NX,NY,NCELLX,3),one2sw(NX,NY,NCELLX,3)  
        integer twosw(NX,NY,NCELLX,3),two2sw(NX,NY,NCELLX,3)       
-       integer exitsw(NX,NY,NCELLX,3),exit2sw(NX,NY,NCELLX,3) 
+       integer exitsw(NX,NY,NCELLX,3),exit2sw(NX,NY,NCELLX,3)
 c ... for the middle interstate (w running)
        integer carmw(NX,NY,NCELLX,3),velmw(NX,NY,NCELLX,3)
        integer lagmw(NX,NY,NCELLX,3),identmw(NX,NY,NCELLX,3)
@@ -100,8 +118,8 @@ c ... for the middle interstate (e running)
        integer carp2me(NX,NY,NCELLX,3),carpme(NX,NY,NCELLX,3)      
        integer oneme(NX,NY,NCELLX,3),one2me(NX,NY,NCELLX,3)  
        integer twome(NX,NY,NCELLX,3),two2me(NX,NY,NCELLX,3)       
-       integer exitme(NX,NY,NCELLX,3),exit2me(NX,NY,NCELLX,3)       
-c ... for the highways     
+       integer exitme(NX,NY,NCELLX,3),exit2me(NX,NY,NCELLX,3)        
+c ... for the highways ... 2 indicates the number of possible lanes
        integer care(NX,NY,NCELLX,2),vele(NX,NY,NCELLX,2)
        integer lage(NX,NY,NCELLX,2),idente(NX,NY,NCELLX,2)
        integer car2e(NX,NY,NCELLX,2),vel2e(NX,NY,NCELLX,2)
@@ -110,36 +128,49 @@ c ... for the highways
        integer oneh(NX,NY,NCELLX,2),one2h(NX,NY,NCELLX,2)
        integer twoh(NX,NY,NCELLX,2),two2h(NX,NY,NCELLX,2)
        integer exith(NX,NY,NCELLX,2),exit2h(NX,NY,NCELLX,2)
+
 c... for the agent characteristics 
+c    We have N agents corresponding to total population in each grid cell. Largest tile pop is 
+c    1,181,420 (TB) and overall population is 19,755,788. 
+c    We can combine populations into households of 4 that behaves collectively.
+c    Then the array size needed for each grid cell would be about 295,355.
+c    Across all grid cells, that's 4,938,947. 
        integer orisk(NX,NY),wrisk(NX,NY),srisk(NX,NY),rrisk(NX,NY)
-       integer storm(NX,NY,512100)
+       integer storm(NX,NY,295355)
        integer evacthres(NX,NY),evac(NX,NY)
        integer socio(NX,NY),age(NX,NY),nocar(NX,NY),mobl(NX,NY)
-       integer socios(NX,NY,512100),ages(NX,NY,512100)
-       integer mobls(NX,NY,512100),agewt(NX,NY,512100)       
-       integer ewt(NX,NY,512100)
-       integer soph(4938947),pevac(NX,NY,512100)
+       integer socios(NX,NY,295355),ages(NX,NY,295355)
+       integer mobls(NX,NY,295355),agewt(NX,NY,295355)       
+       integer ewt(NX,NY,295355)
+       integer soph(4938947),pevac(NX,NY,295355)
        integer threatC(4938947),gender(4938947),priorEv(4938947)
-       integer priorEx(4938947),priorCM(4938947),mevac(NX,NY,512100)
-       INTEGER failatt(NX,NY,512100),dthresh(NX,NY,512100)
-       INTEGER decisiont(NX,NY,512100),dest(NX,11)
-       INTEGER destside(NX,NY,512100),onerte(NX,NY,512100)
-       INTEGER tworte(NX,NY,512100),exitrow(NX,NY,512100)
-       integer wwt(NX,NY,512100),swt(NX,NY,512100),rwt(NX,NY,512100)          
-       integer barr(NX,NY,512100),awt(NX,NY,512100),mobwt(NX,NY,512100) 
-       integer strmwt(NX,NY,512100),ct12(NX,NY),dect(NX,NY,512100)       
+       integer priorEx(4938947),priorCM(4938947),mevac(NX,NY,295355)
+       INTEGER failatt(NX,NY,295355),dthresh(NX,NY,295355)
+       INTEGER decisiont(NX,NY,295355),dest(NX,21)
+       INTEGER destside(NX,NY,295355),onerte(NX,NY,295355)
+       INTEGER tworte(NX,NY,295355),exitrow(NX,NY,295355)
+       integer wwt(NX,NY,295355),swt(NX,NY,295355),rwt(NX,NY,295355)          
+       integer barr(NX,NY,295355),awt(NX,NY,295355),mobwt(NX,NY,295355) 
+       integer strmwt(NX,NY,295355),ct12(NX,NY),dect(NX,NY,295355)  
+c    Defining arrays to count/track evacuation behaviors in each cell 	   
        INTEGER ct0(NX,NY),ct1(NX,NY),ct2(NX,NY),ct3(NX,NY),ct4(NX,NY)
-       INTEGER ct5(NX,NY),ct6(NX,NY),maxspots(NX,11),spt(NX,11)
+       INTEGER ct5(NX,NY),ct6(NX,NY),maxspots(NX,21),spt(NX,21)
        integer ct7(NX,NY),ct8(NX,NY),ct9(NX,NY),ct10(NX,NY),ct11(NX,NY)
        integer ct99(NX,NY)
        integer ctimey(NX,NY),ctimeo(NX,NY),ctimer(NX,NY),tstoa(NX,NY)
        integer eotime(NX,NY),parteos(NX,NY),eoticks(NX,NY)
+       
        iseed=Time()
        call srand(iseed)
        ivac=1
-c       write(*,*) 'To initialize model, press 1-enter'
-c       read(*,*) ifcst1
-c ... open text file with grid population and household characterstics averaged across the grid      
+
+c ... open text file with grid population and household characterstics averaged across the grid. This is done once.    
+c.     npop=number of people in each grid cell. 
+c.     evacthres notes which grid cells are "eligeble" for evacuation orders (0=inland)
+c.     socio, age, nocar, mobl are placed on a 1-5 scale based on social vulnerability datasets across the state
+c.     ctimey, ctimeo, ctimer denote three levels of clearance times (low, middle, high) which are adjusted based on surge risk 
+c.     parteo notes the percentage of a grid cell that is in an inundation or evacuation zone 
+
        open(unit=1,file='npop.txt',status='old')
        do while(.true.)
          read(1,*,end=50) mx,my,npop(mx,my),evacthres(mx,my),
@@ -149,18 +180,11 @@ c ... open text file with grid population and household characterstics averaged 
          npop2(mx,my)=npop(mx,my)
        end do      
  50    close(1)
-    
-c.         Ingest the forecast from ADV26
-       open(unit=26,file='adv26.csv',status='old')
-       do while(.true.)
-         read(26,*,end=26) mx,my,wrisk(mx,my),srisk(mx,my),
-     *        rrisk(mx,my),tstoa(mx,my)
-       end do 
- 26    close(26)
  
-c.        Restructuring the age distribution such as middle ages are more likely to evacuate
-        do kx=1,4
-          do ky=1,10       
+ c.     Restructuring the age distribution of grid cells such as middle ages are more likely to evacuate. Could easily be done in the input files but 
+ c.     quickly did them here. 
+        do kx=1,8
+          do ky=1,20       
              evac(kx,ky)=0
 			 eoticks(kx,ky)=0
              if (age(kx,ky).eq.1) then
@@ -175,27 +199,45 @@ c.        Restructuring the age distribution such as middle ages are more likely
                 age(kx,ky)=1
              end if
           end do
-         end do   
-         
+         end do  
+    
+c.     Ingest the forecast from ADV26. In this code, we are ingesting the first "florida-relevent" forecast from Hurricane Irma. 
+c.     This file has information on wind, surge, rain risk, and the estimated time of arrival of tropical storm force winds for each grid cell
+c.     defined as mx, my. 
+
+       open(unit=26,file='adv26.csv',status='old')
+       do while(.true.)
+         read(26,*,end=26) mx,my,wrisk(mx,my),srisk(mx,my),
+     *        rrisk(mx,my),tstoa(mx,my)
+       end do 
+ 26    close(26)
+     
 c ... initalize ABM with evacuation-decisions 
+c     this is a subroutine at the bottom of the .f file 
        call ABM(1,npop2,wrisk,srisk,rrisk,mevac,pevac,
      *     socio,age,nocar,mobl,agewt,
      *     wwt,swt,rwt,barr,mobwt,strmwt,ewt,tstoa)       
-       nlast=0
-       state=0
-       nevac=0
-c ... create and open some text files to write traffic updates every 6h 
-c...  in the current state of the model, nothing is being written into these
+	 
+c ... here is where we update the forecast every 6 hours 
        ncount=0
        nmin=0
        ntick=0
        ncella=0
        ntime=0
        ncellb=0
-       ntimeb=0       
-       do while(.true.)
+       ntimeb=0
+	   nlast=0
+       state=0
+       nevac=0
+	   
+c     we loop through every ntick (1.2 seconds).. 
+c     forecasts update every 6 hours 
+c     there are 3000 nticks in an hour, so every 6 hours is 18000 nticks 
+      
+        do while(.true.)
          ntick=ntick+1
-c.         36 hours later, Ingest the forecast from ADV27     
+
+c.       Ingest the forecast from ADV27     
          IF (ntick.eq.18000) then 
          open(unit=27,file='adv27.csv',status='old')
          do while(.true.)
@@ -204,7 +246,7 @@ c.         36 hours later, Ingest the forecast from ADV27
          end do 
  27     close(27)
          end if   
-c.         42 hours later, Ingest the forecast from ADV28    
+c.       Ingest the forecast from ADV28    
          IF (ntick.eq.(18000*2)) then 
          open(unit=28,file='adv28.csv',status='old')
          do while(.true.)
@@ -213,7 +255,7 @@ c.         42 hours later, Ingest the forecast from ADV28
          end do 
  28     close(28)
          end if         
-c.         At 48 hours in, Ingest the forecast from ADV29 (appx 2.5 days pre-landfal)       
+c.       Ingest the forecast from ADV29      
          IF (ntick.eq.(18000*3)) then 
          open(unit=29,file='adv29.csv',status='old')
          do while(.true.)
@@ -222,7 +264,7 @@ c.         At 48 hours in, Ingest the forecast from ADV29 (appx 2.5 days pre-lan
          end do 
  29     close(29)
          end if 
-c.         At 54 hours in, Ingest the forecast from ADV30  
+c.       Ingest the forecast from ADV30  
          IF (ntick.eq.(18000*4)) then 
          open(unit=30,file='adv30.csv',status='old')
          do while(.true.)
@@ -231,7 +273,7 @@ c.         At 54 hours in, Ingest the forecast from ADV30
          end do 
  30     close(30)
          end if 
-c.         At 60 hours in, Ingest the forecast from ADV31  
+c.       Ingest the forecast from ADV31  
          IF (ntick.eq.(18000*5)) then 
          open(unit=31,file='adv31.csv',status='old')
          do while(.true.)
@@ -240,7 +282,7 @@ c.         At 60 hours in, Ingest the forecast from ADV31
          end do 
  31     close(31)
          end if 
-c.         At 66 hours in, Ingest the forecast from ADV32  
+c.       Ingest the forecast from ADV32  
          IF (ntick.eq.(18000*6)) then 
          open(unit=32,file='adv32.csv',status='old')
          do while(.true.)
@@ -249,7 +291,7 @@ c.         At 66 hours in, Ingest the forecast from ADV32
          end do 
  32     close(32)
          end if          
-c.         At 72 hours in, Ingest the forecast from ADV33 (appx 1.5 days pre-landfal)       
+c.       Ingest the forecast from ADV33        
          IF (ntick.eq.(18000*7)) then 
          open(unit=33,file='adv33.csv',status='old')
          do while(.true.)
@@ -258,7 +300,7 @@ c.         At 72 hours in, Ingest the forecast from ADV33 (appx 1.5 days pre-lan
          end do 
  33     close(33)
          end if
-c.         At 78 hours in, Ingest the forecast from ADV34  
+c.       Ingest the forecast from ADV34  
          IF (ntick.eq.(18000*8)) then 
          open(unit=34,file='adv34.csv',status='old')
          do while(.true.)
@@ -267,7 +309,7 @@ c.         At 78 hours in, Ingest the forecast from ADV34
          end do 
  34     close(34)
          end if  
-c.         At 84 hours in, Ingest the forecast from ADV35  
+c.       Ingest the forecast from ADV35  
          IF (ntick.eq.(18000*9)) then 
          open(unit=35,file='adv35.csv',status='old')
          do while(.true.)
@@ -276,7 +318,7 @@ c.         At 84 hours in, Ingest the forecast from ADV35
          end do 
  35     close(35)
          end if 
-c.         At 90 hours in, Ingest the forecast from ADV36
+c.       Ingest the forecast from ADV36
          IF (ntick.eq.(18000*10)) then 
          open(unit=36,file='adv36.csv',status='old')
          do while(.true.)
@@ -285,7 +327,7 @@ c.         At 90 hours in, Ingest the forecast from ADV36
          end do 
  36     close(36)
          end if          
-c.         At 96 hours in, Ingest the forecast from ADV37 (appx 0.5 days pre-landfal)       
+c.       Ingest the forecast from ADV37 (appx 0.5 days pre-landfal)       
          IF (ntick.eq.(18000*11)) then 
          open(unit=37,file='adv37.csv',status='old')
          do while(.true.)
@@ -294,7 +336,7 @@ c.         At 96 hours in, Ingest the forecast from ADV37 (appx 0.5 days pre-lan
          end do 
  37     close(37)
          end if
-c.         At 102 hours in, Ingest the forecast from ADV38      
+c.       Ingest the forecast from ADV38      
          IF (ntick.eq.(18000*12)) then 
          open(unit=38,file='adv38.csv',status='old')
          do while(.true.)
@@ -303,7 +345,7 @@ c.         At 102 hours in, Ingest the forecast from ADV38
          end do 
  38     close(38)
          end if   
-c.         At 108 hours in, Ingest the forecast from ADV39       
+c.       Ingest the forecast from ADV39       
          IF (ntick.eq.(18000*13)) then 
          open(unit=39,file='adv39.csv',status='old')
          do while(.true.)
@@ -312,7 +354,7 @@ c.         At 108 hours in, Ingest the forecast from ADV39
          end do 
  39     close(39)
          end if 
-c.         At 114 hours in, Ingest the forecast from ADV40       
+c.       Ingest the forecast from ADV40       
          IF (ntick.eq.(18000*14)) then 
          open(unit=40,file='adv40.csv',status='old')
          do while(.true.)
@@ -321,7 +363,7 @@ c.         At 114 hours in, Ingest the forecast from ADV40
          end do 
  40     close(40)
          end if         
-c.         At 120 hours in, Ingest the forecast from ADV41 (loc in nw fl)       
+c.       Ingest the forecast from ADV41 (loc in nw fl)       
          IF (ntick.eq.(18000*15)) then 
          open(unit=41,file='adv41.csv',status='old')
          do while(.true.)
@@ -330,7 +372,7 @@ c.         At 120 hours in, Ingest the forecast from ADV41 (loc in nw fl)
          end do 
  41     close(41)
          end if
-c.         At 78 hours in, Ingest the forecast from ADV42  
+c.       Ingest the forecast from ADV42  
          IF (ntick.eq.(18000*16)) then 
          open(unit=42,file='adv42.csv',status='old')
          do while(.true.)
@@ -339,7 +381,7 @@ c.         At 78 hours in, Ingest the forecast from ADV42
          end do 
  42     close(42)
          end if  
-c.         At 84 hours in, Ingest the forecast from ADV43  
+c.       Ingest the forecast from ADV43  
          IF (ntick.eq.(18000*17)) then 
          open(unit=43,file='adv43.csv',status='old')
          do while(.true.)
@@ -348,7 +390,7 @@ c.         At 84 hours in, Ingest the forecast from ADV43
          end do 
  43     close(43)
          end if 
-c.         At 90 hours in, Ingest the forecast from ADV44 
+c.       Ingest the forecast from ADV44 
          IF (ntick.eq.(18000*18)) then 
          open(unit=44,file='adv44.csv',status='old')
          do while(.true.)
@@ -357,7 +399,7 @@ c.         At 90 hours in, Ingest the forecast from ADV44
          end do 
  44     close(44)
          end if          
-c.         At 96 hours in, Ingest the forecast from ADV45 (appx 0.5 days pre-landfal)       
+c.       Ingest the forecast from ADV45 (appx 0.5 days pre-landfal)       
          IF (ntick.eq.(18000*19)) then 
          open(unit=45,file='adv45.csv',status='old')
          do while(.true.)
@@ -366,7 +408,7 @@ c.         At 96 hours in, Ingest the forecast from ADV45 (appx 0.5 days pre-lan
          end do 
  45     close(45)
          end if
-c.         At 102 hours in, Ingest the forecast from ADV46       
+c.       Ingest the forecast from ADV46       
          IF (ntick.eq.(18000*20)) then 
          open(unit=46,file='adv46.csv',status='old')
          do while(.true.)
@@ -375,7 +417,7 @@ c.         At 102 hours in, Ingest the forecast from ADV46
          end do 
  46     close(46)
          end if   
-c.         At 108 hours in, Ingest the forecast from ADV47       
+c.       Ingest the forecast from ADV47       
          IF (ntick.eq.(18000*21)) then 
          open(unit=47,file='adv47.csv',status='old')
          do while(.true.)
@@ -384,7 +426,7 @@ c.         At 108 hours in, Ingest the forecast from ADV47
          end do 
  47     close(47)
          end if 
-c.         At 114 hours in, Ingest the forecast from ADV48       
+c.       Ingest the forecast from ADV48       
          IF (ntick.eq.(18000*22)) then 
          open(unit=48,file='adv48.csv',status='old')
          do while(.true.)
@@ -392,10 +434,15 @@ c.         At 114 hours in, Ingest the forecast from ADV48
      *        rrisk(mx,my),tstoa(mx,my)
          end do 
  48     close(48)
-         end if 
- 
-         do ky=1,10
-         do kx=1,4
+         end if 		 
+
+c.  within the same do loop, we have our emergency manager agents make evacuation decisions
+c.  this is a sub loop here going across all grid cells 
+c.  defining the time when evacuation orders will be issued based on the forecast and clearance times
+c.  higher surge risk means and earlier decision point as more time is needed to evacuate  
+		 			 		 
+         do ky=1,20
+         do kx=1,8
           if (ntick.eq.1) then 
             if (srisk(kx,ky).ge.5.and.srisk(kx,ky).le.6) then
               eotime(kx,ky)=int(3000*(tstoa(kx,ky)-ctimey(kx,ky)))
@@ -405,7 +452,7 @@ c.         At 114 hours in, Ingest the forecast from ADV48
               eotime(kx,ky)=int(3000*(tstoa(kx,ky)-ctimer(kx,ky)))		  
             else
               eotime(kx,ky)=9999999
-            end if     
+            end if   
             
           else if (mod(ntick,18000).eq.0) then
             if (srisk(kx,ky).ge.5.and.srisk(kx,ky).le.6) then
@@ -419,13 +466,14 @@ c.         At 114 hours in, Ingest the forecast from ADV48
             end if 
             if (eotime(kx,ky).lt.0) then
                 eotime(kx,ky)=0
-            end if 
+            end if                
           end if
          end do
          end do
-         
-         do ky=1,10
-         do kx=1,4
+
+c.  looping across grid cells again, an evacuation order will be issued once the time (ntick) reaches the evacuation order time (eotime)
+         do ky=1,20
+         do kx=1,8
          
          if (evac(kx,ky).eq.0) then
             if(ntick.ge.eotime(kx,ky)) then
@@ -433,7 +481,10 @@ c.         At 114 hours in, Ingest the forecast from ADV48
             else
                evac(kx,ky)=0
             end if
-            
+
+c.   evacuation orders aren't issued for the entire grid cell, just portions along the coast
+c..  this code issues evacuation orders to that percentage of people in the grid cell within an evacuation zone, as defined in the npop file  
+      
             IF (evac(kx,ky).eq.1) then
                 n3e=npop2(kx,ky)/4 
                 do n4=1,n3e  
@@ -442,48 +493,47 @@ c.         At 114 hours in, Ingest the forecast from ADV48
                    else 
                       pevac(kx,ky,n4)=0
                    END IF
-c                write(10,*) kx,ky,parteos(kx,ky)*0.01,pevac(kx,ky,n4) 
                 end do
             end if 
-             
-         end if    
+ 
+         end if     
 
          end do
          end do
-         
+c.  printing out the evacuation order status every 6 hours
+c. this prints to the screen and to different files e.g., fort.10, fort.16         
          
          if (ntick.eq.1) then
-              write(*,*) 'evaco time, evac issued, surgerisk'          
-              write(16,*) 'evaco time, evac issued, surgerisk'          
-           do my=10,1,-1
-              write(*,*) my,(eotime(mx,my)/3000,mx=1,4),
-     *                     (evac(mx,my),mx=1,4),(srisk(mx,my),mx=1,4)
-              write(10,*) my,(eotime(mx,my)/3000,mx=1,4),
-     *                     (evac(mx,my),mx=1,4),(srisk(mx,my),mx=1,4)     
-              write(16,*) my,(eotime(mx,my)/3000,mx=1,4),
-     *                     (evac(mx,my),mx=1,4),(srisk(mx,my),mx=1,4)     
+              write(*,*) 'evaco time, evac issued'          
+              write(16,*) 'evaco time, evac issued'          
+           do my=20,1,-1
+              write(*,*) my,(eotime(mx,my)/3000,mx=1,8),
+     *                     (evac(mx,my),mx=1,8)
+              write(10,*) my,(eotime(mx,my)/3000,mx=1,8),
+     *                     (evac(mx,my),mx=1,8)     
+              write(16,*) my,(eotime(mx,my)/3000,mx=1,8),
+     *                     (evac(mx,my),mx=1,8)    
            end do
          end if
          if (mod(ntick,18000).eq.0) then
-              write(*,*) 'evaco time, evac issued, surgerisk'  
-              write(16,*) 'evaco time, evac issued, surgerisk'  
+              write(*,*) 'evaco time, evac issued'  
+              write(16,*) 'evaco time, evac issued'  
               write(16,*) 'nhour',ntick/3000    
-           do my=10,1,-1
-              write(*,*) my,((eotime(mx,my)-ntick)/3000,mx=1,4),
-     *                     (evac(mx,my),mx=1,4),(srisk(mx,my),mx=1,4)
-              write(10,*) my,((eotime(mx,my)-ntick)/3000,mx=1,4),
-     *                     (evac(mx,my),mx=1,4),(srisk(mx,my),mx=1,4) 
-              write(16,*) my,((eotime(mx,my)-ntick)/3000,mx=1,4),
-     *                     (evac(mx,my),mx=1,4),(srisk(mx,my),mx=1,4)     
+           do my=20,1,-1
+              write(*,*) my,((eotime(mx,my)-ntick)/3000,mx=1,8),
+     *                     (evac(mx,my),mx=1,8)
+              write(10,*) my,((eotime(mx,my)-ntick)/3000,mx=1,8),
+     *                     (evac(mx,my),mx=1,8)
+              write(16,*) my,((eotime(mx,my)-ntick)/3000,mx=1,8),
+     *                     (evac(mx,my),mx=1,8)    
            end do
          end if         
-c .............................................................................................................................. c
-c .... This is the part of the model where we move traffic along the grid .............. c
-c .............................................................................................................................. c
-
+		 
+c.    THE TRAFFIC MODEL
 c ... check for any accident/out of gas incident anywhere at this time step
 c     incidents have the effect of blocking traffic through the area for 5 minutes
 c     and slowing it down for another 10 minutes thereafter
+
        DO ln=1,5  
 c. this section will place random accidents on the E Interstate (if any)
          if (ntick.le.60*50) goto 780
@@ -517,7 +567,7 @@ c. this section will place random accidents on the W Interstate (if any)
        END DO 
              
 c .... MOVING TRAFFIC on the E-Interstate ............
-       DO ln=1,5
+       do ln=1,5
          do i=NCELLY-1,1,-1
 c ... Rule0 - accident:
 c          incidents have the effect of blocking traffic through the area for 5 minutes 
@@ -561,15 +611,15 @@ c       if car is stopped, then wait 1 tic before accelerating
              goto 101
            end if
 c ... handle if car is at intersection for middle highway
-           if (i+nt.gt.14000.and.twoe(i,ln).eq.2) then
+           if (i+nt.gt.17500.and.twoe(i,ln).eq.2) then
              do le=1,3           
-               if (carmw(4,5,i+nt-14000,le).eq.0) then
-                 carmw(4,5,i+nt-14000,le)=1
-                 velmw(4,5,i+nt-14000,le)=vel(i,ln)
-                 identmw(4,5,i+nt-14000,le)=ident(i,ln)
-                 carpmw(4,5,i+nt-14000,le)=carp(i,ln)
-                 twomw(4,5,i+nt-14000,le)=twoe(i,ln)
-                 exitmw(4,5,i+nt-14000,le)=exite(i,ln)
+               if (carmw(8,10,i+nt-17500,le).eq.0) then
+                 carmw(8,10,i+nt-17500,le)=1
+                 velmw(8,10,i+nt-17500,le)=vel(i,ln)
+                 identmw(8,10,i+nt-17500,le)=ident(i,ln)
+                 carpmw(8,10,i+nt-17500,le)=carp(i,ln)
+                 twomw(8,10,i+nt-17500,le)=twoe(i,ln)
+                 exitmw(8,10,i+nt-17500,le)=exite(i,ln)
                  car2(i,ln)=0
                  carp2(i,ln)=0
                  vel2(i,ln)=0
@@ -589,7 +639,7 @@ c ... handle if car is at intersection for middle highway
            end if
 c ... handle if car is at edge
            NCELLe=NCELLY
-           if (ivac.eq.1) NCELLe=3500*(exit2(i,ln)-1)
+           if (ivac.eq.1) NCELLe=1750*(exit2(i,ln)-1)
            if (i+nt.gt.NCELLe) then
              car2(i,ln)=0
              vel2(i,ln)=0
@@ -685,15 +735,15 @@ c       if car is stopped, then wait 1 tic before accelerating
              goto 801
            end if
 c ... handle if car is at intersection for middle highway
-           if (i+nt.gt.14000.and.twow(i,ln).eq.1) then
+           if (i+nt.gt.17500.and.twow(i,ln).eq.1) then
              do le=1,3           
-               if (carme(1,5,i+nt-14000,le).eq.0) then
-                 carme(1,5,i+nt-14000,le)=1
-                 velme(1,5,i+nt-14000,le)=velX(i,ln)
-                 identme(1,5,i+nt-14000,le)=identX(i,ln)
-                 carpme(1,5,i+nt-14000,le)=carpX(i,ln)
-                 twome(1,5,i+nt-14000,le)=twow(i,ln)
-                 exitme(1,5,i+nt-14000,le)=exitw(i,ln)
+               if (carme(1,10,i+nt-17500,le).eq.0) then
+                 carme(1,10,i+nt-17500,le)=1
+                 velme(1,10,i+nt-17500,le)=velX(i,ln)
+                 identme(1,10,i+nt-17500,le)=identX(i,ln)
+                 carpme(1,10,i+nt-17500,le)=carpX(i,ln)
+                 twome(1,10,i+nt-17500,le)=twow(i,ln)
+                 exitme(1,10,i+nt-17500,le)=exitw(i,ln)
                  car2X(i,ln)=0
                  carp2X(i,ln)=0
                  vel2X(i,ln)=0
@@ -713,7 +763,7 @@ c ... handle if car is at intersection for middle highway
            end if           
 c ... handle if car is at edge
            NCELLe=NCELLY
-           if (ivac.eq.1) NCELLe=3500*(exit2w(i,ln)-1)
+           if (ivac.eq.1) NCELLe=1750*(exit2w(i,ln)-1)
            if (i+nt.gt.NCELLe) then
              car2X(i,ln)=0
              vel2X(i,ln)=0
@@ -769,7 +819,7 @@ c       Move car at its speed to new cell location
        
 c .... MOVING TRAFFIC on the S Interstate (eastbound) ............
          ky=1
-         do kx=1,4,1
+         do kx=1,8,1
          do le=1,3
          do i=NCELLX,1,-1 
 c ... Rule1 - acceleration:
@@ -802,18 +852,18 @@ c       if car is stopped, then wait 1 tic before accelerating
              exit2se(kx,ky,i,le)=0
              goto 2001
            end if
-           if (kx.eq.4) then
+           if (kx.eq.8) then
 c ... handle if car is at edge or moving beyond - move to N/S
              if (i+nt.gt.NCELLX) then
              do ln=1,5           
-               if (car2((ky-1)*3500+i-NCELLX+nt,ln).eq.0) then
-                 car2((ky-1)*3500+i-NCELLX+nt,ln)=1
-                 vel2((ky-1)*3500+i-NCELLX+nt,ln)=velse(kx,ky,i,le)
-                 ident2((ky-1)*3500+i-NCELLX+nt,ln)=identse(kx,ky,i,le)
-                 carp2((ky-1)*3500+i-NCELLX+nt,ln)=carpse(kx,ky,i,le)
-                 rt2((ky-1)*3500+i-NCELLX+nt,ln)=onese(kx,ky,i,le)
-                 two2e((ky-1)*3500+i-NCELLX+nt,ln)=twose(kx,ky,i,le)
-                 exit2((ky-1)*3500+i-NCELLX+nt,ln)=exitse(kx,ky,i,le)                 
+               if (car2((ky-1)*1750+i-NCELLX+nt,ln).eq.0) then
+                 car2((ky-1)*1750+i-NCELLX+nt,ln)=1
+                 vel2((ky-1)*1750+i-NCELLX+nt,ln)=velse(kx,ky,i,le)
+                 ident2((ky-1)*1750+i-NCELLX+nt,ln)=identse(kx,ky,i,le)
+                 carp2((ky-1)*1750+i-NCELLX+nt,ln)=carpse(kx,ky,i,le)
+                 rt2((ky-1)*1750+i-NCELLX+nt,ln)=onese(kx,ky,i,le)
+                 two2e((ky-1)*1750+i-NCELLX+nt,ln)=twose(kx,ky,i,le)
+                 exit2((ky-1)*1750+i-NCELLX+nt,ln)=exitse(kx,ky,i,le)                 
                  car2se(kx,ky,i,le)=0
                  carp2se(kx,ky,i,le)=0
                  vel2se(kx,ky,i,le)=0
@@ -910,7 +960,7 @@ c       Move car at its speed to new cell location
          
 c .... MOVING TRAFFIC on the S Interstate (westbound) ............
          ky=1
-         do kx=4,1,-1
+         do kx=8,1,-1
          do le=1,3
          do i=NCELLX,1,-1
 c ... Rule1 - acceleration:
@@ -947,14 +997,14 @@ c       if car is stopped, then wait 1 tic before accelerating
 c ... handle if car is at edge or moving beyond - move to N/S
              if (i+nt.gt.NCELLX) then
              do ln=1,5           
-               if (car2X((ky-1)*3500+i-NCELLX+nt,ln).eq.0) then
-                 car2X((ky-1)*3500+i-NCELLX+nt,ln)=1
-                 vel2X((ky-1)*3500+i-NCELLX+nt,ln)=velsw(kx,ky,i,le)
-                 ident2X((ky-1)*3500+i-NCELLX+nt,ln)=identsw(kx,ky,i,le)
-                 carp2X((ky-1)*3500+i-NCELLX+nt,ln)=carpsw(kx,ky,i,le)
-                 one2w((ky-1)*3500+i-NCELLX+nt,ln)=onesw(kx,ky,i,le)
-                 two2w((ky-1)*3500+i-NCELLX+nt,ln)=twosw(kx,ky,i,le)
-                 exit2w((ky-1)*3500+i-NCELLX+nt,ln)=exitsw(kx,ky,i,le)
+               if (car2X((ky-1)*1750+i-NCELLX+nt,ln).eq.0) then
+                 car2X((ky-1)*1750+i-NCELLX+nt,ln)=1
+                 vel2X((ky-1)*1750+i-NCELLX+nt,ln)=velsw(kx,ky,i,le)
+                 ident2X((ky-1)*1750+i-NCELLX+nt,ln)=identsw(kx,ky,i,le)
+                 carp2X((ky-1)*1750+i-NCELLX+nt,ln)=carpsw(kx,ky,i,le)
+                 one2w((ky-1)*1750+i-NCELLX+nt,ln)=onesw(kx,ky,i,le)
+                 two2w((ky-1)*1750+i-NCELLX+nt,ln)=twosw(kx,ky,i,le)
+                 exit2w((ky-1)*1750+i-NCELLX+nt,ln)=exitsw(kx,ky,i,le)
                  car2sw(kx,ky,i,le)=0
                  carp2sw(kx,ky,i,le)=0
                  vel2sw(kx,ky,i,le)=0
@@ -1050,8 +1100,8 @@ c       Move car at its speed to new cell location
          end do            
 
 c .... MOVING TRAFFIC on the mid-interstate (westbound) ............
-         ky=5
-         do kx=4,3,-1
+         ky=10
+         do kx=8,5,-1
          do le=1,3
          do i=NCELLX,1,-1
 c ... Rule1 - acceleration:
@@ -1171,9 +1221,9 @@ c       Move car at its speed to new cell location
          end do
          end do
          end do 
-c. .... MOVING TRAFFIC on the mid-interstate (westbound) ............
-         ky=5
-         do kx=1,2
+c. .... MOVING TRAFFIC on the mid-interstate (eastbound) ............
+         ky=10
+         do kx=1,4
          do le=1,3
          do i=NCELLX,1,-1
 c ... Rule1 - acceleration:
@@ -1292,12 +1342,23 @@ c       Move car at its speed to new cell location
  9001      continue
          end do
          end do
-         end do        
+         end do
 c ... MOVING TRAFFIC on the east (2 lane) highways 
-         do ky=2,10
-         do kx=3,4,1
-         DO lx=1,2
+         do ky=2,20
+		 if (ky.eq.2) goto 6099
+		 if (ky.eq.4) goto 6099
+		 if (ky.eq.6) goto 6099
+		 if (ky.eq.8) goto 6099
+		 if (ky.eq.10) goto 6099
+		 if (ky.eq.12) goto 6099
+		 if (ky.eq.14) goto 6099
+		 if (ky.eq.16) goto 6099
+		 if (ky.eq.18) goto 6099
+		 if (ky.eq.20) goto 6099
+         do kx=5,8,1
+	     do lx=1,2
          do i=NCELLX,1,-1
+         
 c ... Rule1 - acceleration:
 c       if V<Vmx2 accel by 1 unless car is stopped
 c       if car is stopped, then wait 1 tic before accelerating
@@ -1328,18 +1389,18 @@ c       if car is stopped, then wait 1 tic before accelerating
              exit2h(kx,ky,i,lx)=0
              goto 1001
            end if
-           if (kx.eq.4) then
+           if (kx.eq.8) then
 c ... handle if car is at edge or moving beyond - move to N/S
              if (i+nt.gt.NCELLX) then
              do ln=1,5           
-               if (car2((ky-1)*3500+i-NCELLX+nt,ln).eq.0) then
-                 car2((ky-1)*3500+i-NCELLX+nt,ln)=1
-                 vel2((ky-1)*3500+i-NCELLX+nt,ln)=vele(kx,ky,i,lx)
-                 ident2((ky-1)*3500+i-NCELLX+nt,ln)=idente(kx,ky,i,lx)
-                 carp2((ky-1)*3500+i-NCELLX+nt,ln)=carpe(kx,ky,i,lx)
-                 rt2((ky-1)*3500+i-NCELLX+nt,ln)=oneh(kx,ky,i,lx)
-                 two2e((ky-1)*3500+i-NCELLX+nt,ln)=twoh(kx,ky,i,lx)
-                 exit2((ky-1)*3500+i-NCELLX+nt,ln)=exith(kx,ky,i,lx) 
+               if (car2((ky-1)*1750+i-NCELLX+nt,ln).eq.0) then
+                 car2((ky-1)*1750+i-NCELLX+nt,ln)=1
+                 vel2((ky-1)*1750+i-NCELLX+nt,ln)=vele(kx,ky,i,lx)
+                 ident2((ky-1)*1750+i-NCELLX+nt,ln)=idente(kx,ky,i,lx)
+                 carp2((ky-1)*1750+i-NCELLX+nt,ln)=carpe(kx,ky,i,lx)
+                 rt2((ky-1)*1750+i-NCELLX+nt,ln)=oneh(kx,ky,i,lx)
+                 two2e((ky-1)*1750+i-NCELLX+nt,ln)=twoh(kx,ky,i,lx)
+                 exit2((ky-1)*1750+i-NCELLX+nt,ln)=exith(kx,ky,i,lx) 
                  car2e(kx,ky,i,lx)=0
                  carp2e(kx,ky,i,lx)=0
                  vel2e(kx,ky,i,lx)=0
@@ -1429,15 +1490,29 @@ c       Move car at its speed to new cell location
                exit2h(kx,ky,i,lx)=0
              end if
            end if
- 1001      continue    
+ 1001      continue 
+         
+		 end do
          end do
-         end do
-         end do
-         end do   
+         end do 
+ 6099    continue
+		 end do
+
+ 
 c ... MOVING TRAFFIC on the west moving highways 
-         do ky=2,10
-         do kx=2,1,-1
-         do lx=1,2
+         do ky=2,20
+		 if (ky.eq.2) goto 6098
+		 if (ky.eq.4) goto 6098
+		 if (ky.eq.6) goto 6098
+		 if (ky.eq.8) goto 6098
+		 if (ky.eq.10) goto 6098
+		 if (ky.eq.12) goto 6098
+		 if (ky.eq.14) goto 6098
+		 if (ky.eq.16) goto 6098
+		 if (ky.eq.18) goto 6098
+		 if (ky.eq.20) goto 6098
+         do kx=4,1,-1
+	     do lx=1,2
          do i=NCELLX,1,-1
 c ... Rule1 - acceleration:
 c       if V<Vmx2 accel by 1 unless car is stopped
@@ -1473,14 +1548,14 @@ c       if car is stopped, then wait 1 tic before accelerating
 c ... handle if car is at edge or moving beyond - move to N/S
              if (i+nt.gt.NCELLX) then
              do ln=1,5           
-               if (car2X((ky-1)*3500+i-NCELLX+nt,ln).eq.0) then
-                 car2X((ky-1)*3500+i-NCELLX+nt,ln)=1
-                 vel2X((ky-1)*3500+i-NCELLX+nt,ln)=vele(kx,ky,i,lx)
-                 ident2X((ky-1)*3500+i-NCELLX+nt,ln)=idente(kx,ky,i,lx)
-                 carp2X((ky-1)*3500+i-NCELLX+nt,ln)=carpe(kx,ky,i,lx)
-                 one2w((ky-1)*3500+i-NCELLX+nt,ln)=oneh(kx,ky,i,lx)
-                 two2w((ky-1)*3500+i-NCELLX+nt,ln)=twoh(kx,ky,i,lx)
-                 exit2w((ky-1)*3500+i-NCELLX+nt,ln)=exith(kx,ky,i,lx)
+               if (car2X((ky-1)*1750+i-NCELLX+nt,ln).eq.0) then
+                 car2X((ky-1)*1750+i-NCELLX+nt,ln)=1
+                 vel2X((ky-1)*1750+i-NCELLX+nt,ln)=vele(kx,ky,i,lx)
+                 ident2X((ky-1)*1750+i-NCELLX+nt,ln)=idente(kx,ky,i,lx)
+                 carp2X((ky-1)*1750+i-NCELLX+nt,ln)=carpe(kx,ky,i,lx)
+                 one2w((ky-1)*1750+i-NCELLX+nt,ln)=oneh(kx,ky,i,lx)
+                 two2w((ky-1)*1750+i-NCELLX+nt,ln)=twoh(kx,ky,i,lx)
+                 exit2w((ky-1)*1750+i-NCELLX+nt,ln)=exith(kx,ky,i,lx)
                  car2e(kx,ky,i,lx)=0
                  carp2e(kx,ky,i,lx)=0
                  vel2e(kx,ky,i,lx)=0
@@ -1574,7 +1649,8 @@ c       Move car at its speed to new cell location
          end do
          end do
          end do
-         end do    
+ 6098    continue		 
+		 end do
 c ... now update all cells
          do ln=1,5
          do i=1,NCELLY
@@ -1608,7 +1684,7 @@ c ... now update all cells
          end do
          end DO  
          ky=1
-         do kx=4,1,-1
+         do kx=8,1,-1
          do le=1,3
            do i=1,NCELLX
              carsw(kx,ky,i,le)=car2sw(kx,ky,i,le)
@@ -1621,8 +1697,8 @@ c ... now update all cells
            end do
          end do
          end DO
-         ky=5
-         do kx=4,3,-1
+         ky=10
+         do kx=8,5,-1
          do le=1,3
            do i=1,NCELLX
              carmw(kx,ky,i,le)=car2mw(kx,ky,i,le)
@@ -1635,8 +1711,8 @@ c ... now update all cells
            end do
          end do
          end DO
-         ky=5
-         do kx=1,2
+         ky=10
+         do kx=1,4
          do le=1,3
            do i=1,NCELLX
              carme(kx,ky,i,le)=car2me(kx,ky,i,le)
@@ -1648,10 +1724,20 @@ c ... now update all cells
              exitme(kx,ky,i,le)=exit2me(kx,ky,i,le) 
            end do
          end do
-         end DO         
+         end DO 
+         do lx=1,2        
          do ky=2,NY
+		 if (ky.eq.2) goto 6097
+		 if (ky.eq.4) goto 6097
+		 if (ky.eq.6) goto 6097
+		 if (ky.eq.8) goto 6097
+		 if (ky.eq.10) goto 6097
+		 if (ky.eq.12) goto 6097
+		 if (ky.eq.14) goto 6097
+		 if (ky.eq.16) goto 6097
+		 if (ky.eq.18) goto 6097
+		 if (ky.eq.20) goto 6097
          do kx=1,NX
-         DO lx=1,2
            do i=1,NCELLX   
              care(kx,ky,i,lx)=car2e(kx,ky,i,lx)
              carpe(kx,ky,i,lx)=carp2e(kx,ky,i,lx)
@@ -1662,31 +1748,34 @@ c ... now update all cells
              exith(kx,ky,i,lx)=exit2h(kx,ky,i,lx)  
            end do
          end do
+ 6097    continue		 	 
          end do
-         end do
-c .................................................................................................................c
+		 end do
+		 
 c ... END OF TRAFFIC MODEL SECTION ..............................................c
-c .................................................................................................................c
          
-c ... ABM SUBROUTINE CALL 
-c ... This part of the code determine go/no go decisions every 30 minutes
-c ... and place go-decisions onto the highways 
-
-c. Jinit is referred to in the subroutine, where it is used to set agent char. once
+c. Here we are defining some initial parameter states for the evacuation decisions and traffic models		 
+c. Jinit is referred to in the subroutine, where it is used to set agent char. once at the household level 
         IF (ntick.eq.1) THEN
           jinit=1
-          do kx=1,4
-           do ky=1,10
-             n3e=npop2(kx,ky)/4      
+          do kx=1,8
+           do ky=1,20
+             n3e=npop2(kx,ky)/4 
+		 
 c ... here we are setting an agents dthresh which is the amount of time they can last
 c ... (10-30 hours) waiting on the road to evac before they give up. 
-c ... likewise we set agents departure time (i.e. the amt of time they wait before leaving)
+c ... likewise we set agents departure time (decitiont - i.e. the amt of time they wait before leaving)
+c ... failatt is the number of times a vehicle has looked for a spot on road and couldnt find one
+c ... destside is either 0 (left side of grid) or 1 (right side of grid)
+c ... onerte (for those who enter the southern east-west interstate, indicates which direction they head)
+c ... tworte (same thing but for middle east-west interstate connecting tampa and orlando)
+c ... exitrow determines which grid cell evacuees exit I75 and I95 
+
              do n4=1,n3e         
                 IF (pevac(kx,ky,n4).ne.1) then 
                    pevac(kx,ky,n4)=0
                 end if    
                 failatt(kx,ky,n4)=0                   
-c                dthresh(kx,ky,n4)=1+int((rand()*60000)+90000)
                 dthresh(kx,ky,n4)=9999999
                 decisiont(kx,ky,n4)=9999999
                 destside(kx,ky,n4)=0
@@ -1696,25 +1785,33 @@ c                dthresh(kx,ky,n4)=1+int((rand()*60000)+90000)
              end do
            end do 
           end do
-c.... right now the destination tiles are out of state // n fl 
-c.... counting the spots that are available in these tiles (based on tile pop)
-          maxspots(1,11)=20000000
-          maxspots(4,11)=20000000
-          maxspots(2,11)=0
-          maxspots(3,11)=0
-          spt(1,11)=0
-          spt(4,11)=0
-          spt(2,11)=0
-          spt(3,11)=0
-          do lx=1,4
-          do ly=4,10
+c.... counting the spots that are available in upstate Florida (based on tile pop)
+
+          maxspots(1,21)=20000000
+          maxspots(8,21)=20000000
+          maxspots(2,21)=0
+          maxspots(3,21)=0
+          maxspots(4,21)=0
+          maxspots(5,21)=0
+          maxspots(6,21)=0
+          maxspots(7,21)=0
+          spt(1,21)=0
+          spt(4,21)=0
+          spt(2,21)=0
+          spt(3,21)=0
+          spt(5,21)=0
+          spt(6,21)=0
+          spt(7,21)=0
+          spt(8,21)=0
+          do lx=1,8
+          do ly=8,20
             spt(lx,ly)=0
             dest(lx,ly)=0
             IF (lx.eq.1) then 
                maxspots(lx,ly)=npop(lx,ly)/8
-            else if (lx.eq.4) then
+            else if (lx.eq.8) then
                maxspots(lx,ly)=npop(lx,ly)/8
-            else if (ly.eq.5) then
+            else if (ly.eq.10) then
                maxspots(lx,ly)=npop(lx,ly)/8  
             else
                maxspots(lx,ly)=0
@@ -1723,13 +1820,16 @@ c.... counting the spots that are available in these tiles (based on tile pop)
           end do
         ELSE
           jinit=0
-        end if  
-c ... here we call the ABM EVERY 30 MINUTES
+        end if 
+
+c  still more defining initial parameter states		
         if (ntick.eq.2) then
-          do kx=1,4
-          do ky=1,10
+          do kx=1,8
+          do ky=1,20
             n3e=npop2(kx,ky)/4      
             do n4=1,n3e
+c. mevac=99 means you are eligable for evacuating (i.e., you have a car) 
+c. mevac=0			
               if (mevac(kx,ky,n4).eq.99) then
                   if (rand().le.0.01) then
                       mevac(kx,ky,n4)=0
@@ -1739,17 +1839,19 @@ c ... here we call the ABM EVERY 30 MINUTES
               end if    
             end do
           end do
-          end do        
+          end do 
          call ABM(0,npop2,wrisk,srisk,rrisk,mevac,pevac,
      *     socio,age,nocar,mobl,agewt,
      *     wwt,swt,rwt,barr,mobwt,strmwt,ewt,tstoa)
         end if
 
-c        call cpu_time(start)    
         if (mod(ntick,1500).eq.0) then
-          do kx=1,4
-          do ky=1,10
+          do kx=1,8
+          do ky=1,20
             n3e=npop2(kx,ky)/4      
+c. code that eases agents into evacuation decisions
+c. that way there's not an unrealistic big jump in evacuees based on the first forecast
+
             do n4=1,n3e
               if (mevac(kx,ky,n4).eq.99) then
                 if (ntick.le.18000) then 
@@ -1818,15 +1920,16 @@ c        call cpu_time(start)
               end if    
             end do
           end do
-          end do         
+          end do 
+c ... here we call the ABM EVERY 30 MINUTES		  		  
          call ABM(0,npop2,wrisk,srisk,rrisk,mevac,pevac,
      *     socio,age,nocar,mobl,agewt,
      *     wwt,swt,rwt,barr,mobwt,strmwt,ewt,tstoa)
-        end if 
-c        call cpu_time(finish)
-c        print '("Time = ",f6.3," seconds.")',finish-start
-        do kx=1,4
-        do ky=1,10
+        end if
+c   mevac = 1 when the decision is to go. 
+c.  mevac = 4 are those that simply cannot leave due to lack of car etc. 		
+        do kx=1,8
+        do ky=1,20
           n3e=npop2(kx,ky)/4      
           do n4=1,n3e
             if (mevac(kx,ky,n4).eq.1) then
@@ -1871,8 +1974,8 @@ c        print '("Time = ",f6.3," seconds.")',finish-start
          cnt8=0
          cnt9=0
          cnt99=0
-         do kx=1,4
-           do ky=1,10
+         do kx=1,8
+           do ky=1,20
              ct0(kx,ky)=0
              ct1(kx,ky)=0
              ct2(kx,ky)=0
@@ -1895,10 +1998,10 @@ c... assigning desintation tiles... and directions... to those wanting to leave
      *           ntick.gt.decisiont(kx,ky,n4)) THEN     
                  dthresh(kx,ky,n4)=(1+
      *               int((rand()*tstoa(kx,ky)*1500)))        
-                  if (ky.eq.1) then
-                    if (kx.le.3) then
+                  if (ky.le.2) then
+                    if (kx.le.6) then
                          side=1
-                    else if (kx.gt.3) then
+                    else if (kx.gt.6) then
                       if (rand().le.0.40) then
                          side=1
                       else 
@@ -1907,24 +2010,28 @@ c... assigning desintation tiles... and directions... to those wanting to leave
                     end if                      
                     if (side.eq.1) then
                       if (rand().le.0.0001) then
-                        if (spt(1,11).lt.maxspots(1,11)) then
-                           exitrow(kx,ky,n4)=11
-                           spt(1,11)=spt(1,11)+1
-                           dest(1,11)=spt(1,11)                           
+                        if (spt(1,21).lt.maxspots(1,21)) then
+                           exitrow(kx,ky,n4)=21
+                           spt(1,21)=spt(1,21)+1
+                           dest(1,21)=spt(1,21)                           
                            onerte(kx,ky,n4)=1
                            tworte(kx,ky,n4)=0
                            goto 623
                         end if
                       else                        
-                        if (spt(2,5).lt.maxspots(2,5)) then
-                           spt(2,5)=spt(2,5)+1
-                           dest(2,5)=spt(2,5)
-                           exitrow(kx,ky,n4)=5
+
+                        do lx=4,1,-1
+                        if (spt(lx,10).lt.maxspots(lx,10)) then
+                           spt(lx,10)=spt(lx,10)+1
+                           dest(lx,10)=spt(lx,10)
+                           exitrow(kx,ky,n4)=10
                            onerte(kx,ky,n4)=1
                            tworte(kx,ky,n4)=1
                            goto 623
-                        end if  
-                        do ly=4,10
+                        end if
+                        end do
+		
+                        do ly=8,20
                         if (spt(1,ly).lt.maxspots(1,ly)) then
                            spt(1,ly)=spt(1,ly)+1
                            dest(1,ly)=spt(1,ly)
@@ -1937,56 +2044,63 @@ c... assigning desintation tiles... and directions... to those wanting to leave
                       end if  
                     ELSE if (side.eq.2) then
                       if (rand().le.0.0001) then
-                        if (spt(4,11).lt.maxspots(4,11)) then
-                           exitrow(kx,ky,n4)=11
-                           spt(4,11)=spt(4,11)+1
-                           dest(4,11)=spt(4,11)                             
+                        if (spt(8,21).lt.maxspots(8,21)) then
+                           exitrow(kx,ky,n4)=21
+                           spt(8,21)=spt(8,21)+1
+                           dest(8,21)=spt(8,21)                             
                            onerte(kx,ky,n4)=2
                            tworte(kx,ky,n4)=0
                            goto 623
                         end if
-                      else                        
-                        if (spt(3,5).lt.maxspots(3,5)) then
-                           spt(3,5)=spt(3,5)+1
-                           dest(3,5)=spt(3,5)
-                           exitrow(kx,ky,n4)=5
+                      else 
+					  
+                        do lx=5,8
+                        if (spt(lx,10).lt.maxspots(lx,10)) then
+                           spt(lx,10)=spt(lx,10)+1
+                           dest(lx,10)=spt(lx,10)
+                           exitrow(kx,ky,n4)=10
                            onerte(kx,ky,n4)=2
                            tworte(kx,ky,n4)=2
                            goto 623
                         end if
-                        do ly=4,10
-                        if (spt(4,ly).lt.maxspots(4,ly)) then
-                           spt(4,ly)=spt(4,ly)+1
-                           dest(4,ly)=spt(4,ly)
+                        end do
+						
+                        do ly=8,20
+                        if (spt(8,ly).lt.maxspots(8,ly)) then
+                           spt(8,ly)=spt(8,ly)+1
+                           dest(8,ly)=spt(8,ly)
                            exitrow(kx,ky,n4)=ly
-                           onerte(kx,ky,n4)=1
+                           onerte(kx,ky,n4)=2
                            tworte(kx,ky,n4)=0
                            goto 623
                         end if
                         end do
                       end if  
                     end if                          
-                  ELSE if (ky.eq.2.or.ky.eq.3) then
-                    IF (kx.le.2) then
+                  ELSE if (ky.ge.3.and.ky.le.7) then
+                    IF (kx.le.4) then
                       if (rand().le.0.0001) then
-                        if (spt(1,11).lt.maxspots(1,11)) then
-                           exitrow(kx,ky,n4)=11
-                           spt(1,11)=spt(1,11)+1
-                           dest(1,11)=spt(1,11)                             
+                        if (spt(1,21).lt.maxspots(1,21)) then
+                           exitrow(kx,ky,n4)=21
+                           spt(1,21)=spt(1,21)+1
+                           dest(1,21)=spt(1,21)                             
                            onerte(kx,ky,n4)=0
                            tworte(kx,ky,n4)=0
                            goto 623
                          end if  
                       else   
-                        if (spt(2,5).lt.maxspots(2,5)) then
-                           spt(2,5)=spt(2,5)+1
-                           dest(2,5)=spt(2,5)
-                           exitrow(kx,ky,n4)=5
+                        do lx=4,1,-1
+                        if (spt(lx,10).lt.maxspots(lx,10)) then
+                           spt(lx,10)=spt(lx,10)+1
+                           dest(lx,10)=spt(lx,10)
+                           exitrow(kx,ky,n4)=10
                            onerte(kx,ky,n4)=0
                            tworte(kx,ky,n4)=1
                            goto 623
-                        end if  
-                        do ly=4,10
+                        end if
+                        end do
+						
+                        do ly=8,20
                         if (spt(1,ly).lt.maxspots(1,ly)) then
                            spt(1,ly)=spt(1,ly)+1
                            dest(1,ly)=spt(1,ly)
@@ -1999,27 +2113,29 @@ c... assigning desintation tiles... and directions... to those wanting to leave
                       end if  
                     else
                       if (rand().le.0.00001) then
-                        if (spt(4,11).lt.maxspots(4,11)) then
-                           exitrow(kx,ky,n4)=11
-                           spt(4,11)=spt(4,11)+1
-                           dest(4,11)=spt(4,11)                             
+                        if (spt(8,21).lt.maxspots(8,21)) then
+                           exitrow(kx,ky,n4)=21
+                           spt(8,21)=spt(8,21)+1
+                           dest(8,21)=spt(8,21)                             
                            onerte(kx,ky,n4)=0
                            tworte(kx,ky,n4)=0
                            goto 623
                          end if  
                       else                         
-                        if (spt(3,5).lt.maxspots(3,5)) then
-                           spt(3,5)=spt(3,5)+1
-                           dest(3,5)=spt(3,5)
-                           exitrow(kx,ky,n4)=5
+                        do lx=5,8
+                        if (spt(lx,10).lt.maxspots(lx,10)) then
+                           spt(lx,10)=spt(lx,10)+1
+                           dest(lx,10)=spt(lx,10)
+                           exitrow(kx,ky,n4)=10
                            onerte(kx,ky,n4)=0
                            tworte(kx,ky,n4)=2
                            goto 623
                         end if
-                        do ly=4,10
-                        if (spt(4,ly).lt.maxspots(4,ly)) then
-                           spt(4,ly)=spt(4,ly)+1
-                           dest(4,ly)=spt(4,ly)
+                        end do
+                        do ly=8,20
+                        if (spt(8,ly).lt.maxspots(8,ly)) then
+                           spt(8,ly)=spt(8,ly)+1
+                           dest(8,ly)=spt(8,ly)
                            exitrow(kx,ky,n4)=ly
                            onerte(kx,ky,n4)=0
                            tworte(kx,ky,n4)=0
@@ -2029,21 +2145,21 @@ c... assigning desintation tiles... and directions... to those wanting to leave
                       end if                        
                     end if
                   else 
-                    if (kx.le.2) then
-                    if (spt(1,11).lt.maxspots(1,11)) then
-                           exitrow(kx,ky,n4)=11
-                           spt(1,11)=spt(1,11)+1
-                           dest(1,11)=spt(1,11)                             
+                    if (kx.le.4) then
+                    if (spt(1,21).lt.maxspots(1,21)) then
+                           exitrow(kx,ky,n4)=21
+                           spt(1,21)=spt(1,21)+1
+                           dest(1,21)=spt(1,21)                             
                            onerte(kx,ky,n4)=0
                            tworte(kx,ky,n4)=0
                            goto 623
                     end if 
                     end if 
-                    if (kx.gt.2) then
-                    if (spt(4,11).lt.maxspots(4,11)) then
-                           exitrow(kx,ky,n4)=11
-                           spt(4,11)=spt(4,11)+1
-                           dest(4,11)=spt(4,11)                             
+                    if (kx.gt.4) then
+                    if (spt(8,21).lt.maxspots(8,21)) then
+                           exitrow(kx,ky,n4)=21
+                           spt(8,21)=spt(8,21)+1
+                           dest(8,21)=spt(8,21)                             
                            onerte(kx,ky,n4)=0
                            tworte(kx,ky,n4)=0
                            goto 623
@@ -2059,27 +2175,9 @@ c ... if a spot is open then mevac = 2 (agent group is gone) and put a car on th
                if (ntick.gt.decisiont(kx,ky,n4)) THEN
                if (mevac(kx,ky,n4).eq.10.or.mevac(kx,ky,n4).eq.8) THEN
                ncx=1+int(rand()*real(NCELLX))
-               DO lx=1,2
+               do lx=1,2
                DO le=1,3
-               if (ky.gt.1) then
-               if (onerte(kx,ky,n4).eq.0) then
-               if (care(kx,ky,ncx,lx).eq.0.and.
-     *           npop(kx,ky).gt.0) THEN
-                  mevac(kx,ky,n4)=2
-                  care(kx,ky,ncx,lx)=1
-                  oneh(kx,ky,ncx,lx)=onerte(kx,ky,n4)
-                  twoh(kx,ky,ncx,lx)=tworte(kx,ky,n4)
-                  exith(kx,ky,ncx,lx)=exitrow(kx,ky,n4)
-                  vele(kx,ky,ncx,lx)=nVMX2
-                  idente(kx,ky,ncx,lx)=nlast+1
-                  npopl=npop(kx,ky)
-                  npop(kx,ky)=max(npop(kx,ky)-2,0)
-                  num=npopl-npop(kx,ky)
-                  carpe(kx,ky,ncx,lx)=num
-                  nlast=nlast+1
-               end if 
-               end if 
-               end if 
+               if (ky.eq.1) then			   
                if (onerte(kx,ky,n4).eq.2) then
                if (carse(kx,ky,ncx,le).eq.0.and.
      *           npop(kx,ky).gt.0) THEN
@@ -2114,8 +2212,228 @@ c ... if a spot is open then mevac = 2 (agent group is gone) and put a car on th
                     nlast=nlast+1                
                end if
                end if                
+			   end if 
+			   
+               if (ky.eq.2) then			   
+               if (onerte(kx,ky,n4).eq.2) then
+               if (carse(kx,ky-1,ncx,le).eq.0.and.
+     *           npop(kx,ky).gt.0) THEN
+                    mevac(kx,ky,n4)=2
+                    carse(kx,ky-1,ncx,le)=1
+                    onese(kx,ky-1,ncx,le)=onerte(kx,ky,n4)
+                    twose(kx,ky-1,ncx,le)=tworte(kx,ky,n4)
+                    exitse(kx,ky-1,ncx,le)=exitrow(kx,ky,n4)
+                    velse(kx,ky-1,ncx,le)=nVMX
+                    identse(kx,ky-1,ncx,le)=nlast+1
+                    npopl=npop(kx,ky)
+                    npop(kx,ky)=max(npop(kx,ky)-2,0)
+                    num=npopl-npop(kx,ky)
+                    carpse(kx,ky-1,ncx,le)=num
+                    nlast=nlast+1    
+               end if
+               end if
+               if (onerte(kx,ky,n4).eq.1) then
+               if (carsw(kx,ky-1,ncx,le).eq.0.and.
+     *           npop(kx,ky).gt.0) THEN
+                    mevac(kx,ky,n4)=2
+                    carsw(kx,ky-1,ncx,le)=1
+                    onesw(kx,ky-1,ncx,le)=onerte(kx,ky,n4)
+                    twosw(kx,ky-1,ncx,le)=tworte(kx,ky,n4)
+                    exitsw(kx,ky-1,ncx,le)=exitrow(kx,ky,n4)
+                    velsw(kx,ky-1,ncx,le)=nVMX
+                    identsw(kx,ky-1,ncx,le)=nlast+1
+                    npopl=npop(kx,ky)
+                    npop(kx,ky)=max(npop(kx,ky)-2,0)
+                    num=npopl-npop(kx,ky)
+                    carpsw(kx,ky,ncx,le)=num
+                    nlast=nlast+1                
+               end if
+               end if                
+			   end if			   
+			   
+               if (ky.eq.4) then
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if	   
+			   else if (ky.eq.6) then		   
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if				   
+			   else if (ky.eq.8) then		   
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if	
+			   else if (ky.eq.10) then		   
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if	
+			   else if (ky.eq.12) then		   
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if	
+			   else if (ky.eq.14) then		   
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if	
+			   else if (ky.eq.16) then		   
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if		
+			   else if (ky.eq.18) then		   
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if
+			   else if (ky.eq.20) then		   
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky-1,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky-1,ncx,lx)=1
+					oneh(kx,ky-1,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky-1,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky-1,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky-1,ncx,lx)=nVMX2
+					idente(kx,ky-1,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky-1,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if				
+			   else 
+				if (onerte(kx,ky,n4).eq.0) then
+				if (care(kx,ky,ncx,lx).eq.0.and.
+     *           	npop(kx,ky).gt.0) THEN
+					mevac(kx,ky,n4)=2
+					care(kx,ky,ncx,lx)=1
+					oneh(kx,ky,ncx,lx)=onerte(kx,ky,n4)
+					twoh(kx,ky,ncx,lx)=tworte(kx,ky,n4)
+					exith(kx,ky,ncx,lx)=exitrow(kx,ky,n4)
+					vele(kx,ky,ncx,lx)=nVMX2
+					idente(kx,ky,ncx,lx)=nlast+1
+					npopl=npop(kx,ky)
+					npop(kx,ky)=max(npop(kx,ky)-2,0)
+					num=npopl-npop(kx,ky)
+					carpe(kx,ky,ncx,lx)=num
+					nlast=nlast+1
+				end if 
+				end if	   
+               end if			   
                end do
-               END DO 
+			   end do
                failatt(kx,ky,n4)=failatt(kx,ky,n4)+1
                end if
                end if
@@ -2146,6 +2464,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.1.and.kx.eq.4) then
                     ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.2) then
@@ -2153,6 +2479,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.2.and.kx.eq.3) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.8) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
@@ -2162,6 +2496,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.4) then
                     ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.2) then
@@ -2169,6 +2511,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.4.and.kx.eq.3) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.8) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
@@ -2178,6 +2528,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.4) then
                     ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.2) then
@@ -2185,6 +2543,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.6.and.kx.eq.3) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.8) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
@@ -2194,6 +2560,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.4) then
                     ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.2) then
@@ -2201,6 +2575,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.8.and.kx.eq.3) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.8) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
@@ -2210,6 +2592,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.4) then
                     ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.1) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.2) then
@@ -2217,6 +2607,174 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.10.and.kx.eq.3) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else if (ky.eq.11.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.8) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.1) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.2) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.3) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.4) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.5) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.6) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.7) then
+                    ct0(kx,ky)=ct0(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.8) then
                     ct0(kx,ky)=ct0(kx,ky)+1
                   end if 
                end if 
@@ -2230,6 +2788,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.1.and.kx.eq.4) then
                     ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.2) then
@@ -2237,6 +2803,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.2.and.kx.eq.3) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.8) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
@@ -2246,6 +2820,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.4) then
                     ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.2) then
@@ -2253,6 +2835,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.4.and.kx.eq.3) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.8) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
@@ -2262,6 +2852,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.4) then
                     ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.2) then
@@ -2269,6 +2867,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.6.and.kx.eq.3) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.8) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
@@ -2278,6 +2884,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.4) then
                     ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.2) then
@@ -2285,6 +2899,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.8.and.kx.eq.3) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.8) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
@@ -2294,6 +2916,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.4) then
                     ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.1) then
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.2) then
@@ -2302,7 +2932,175 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct1(kx,ky)=ct1(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.4) then
                     ct1(kx,ky)=ct1(kx,ky)+1
-                  end if                    
+                  else IF (ky.eq.10.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.1) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.2) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.3) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.4) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.5) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.6) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.7) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.8) then
+                    ct1(kx,ky)=ct1(kx,ky)+1
+                  end if
                end if 
                if (mevac(kx,ky,n4).eq.2) then 
                   cnt2=cnt2+1  
@@ -2314,6 +3112,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.1.and.kx.eq.4) then
                     ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.2) then
@@ -2321,6 +3127,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.2.and.kx.eq.3) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.8) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
@@ -2330,6 +3144,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.4) then
                     ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.2) then
@@ -2337,6 +3159,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.4.and.kx.eq.3) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.8) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
@@ -2346,6 +3176,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.4) then
                     ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.2) then
@@ -2353,6 +3191,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.6.and.kx.eq.3) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.8) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
@@ -2362,6 +3208,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.4) then
                     ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.2) then
@@ -2369,6 +3223,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.8.and.kx.eq.3) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.8) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
@@ -2378,6 +3240,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.4) then
                     ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.1) then
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.2) then
@@ -2386,7 +3256,175 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct2(kx,ky)=ct2(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.4) then
                     ct2(kx,ky)=ct2(kx,ky)+1
-                 end if          
+                  else IF (ky.eq.10.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.1) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.2) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.3) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.4) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.5) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.6) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.7) then
+                    ct2(kx,ky)=ct2(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.8) then
+                    ct2(kx,ky)=ct2(kx,ky)+1 
+		end if  
                end if 
                if (mevac(kx,ky,n4).eq.3) then 
                   cnt3=cnt3+1  
@@ -2398,6 +3436,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.1.and.kx.eq.4) then
                     ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.2) then
@@ -2405,6 +3451,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.2.and.kx.eq.3) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.8) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
@@ -2414,6 +3468,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.4) then
                     ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.2) then
@@ -2421,6 +3483,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.4.and.kx.eq.3) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.8) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
@@ -2430,6 +3500,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.4) then
                     ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.2) then
@@ -2437,6 +3515,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.6.and.kx.eq.3) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.8) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
@@ -2446,6 +3532,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.4) then
                     ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.2) then
@@ -2453,6 +3547,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.8.and.kx.eq.3) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.8) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
@@ -2462,6 +3564,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.4) then
                     ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.1) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.2) then
@@ -2469,6 +3579,174 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.10.and.kx.eq.3) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.8) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.1) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.2) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.3) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.4) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.5) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.6) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.7) then
+                    ct3(kx,ky)=ct3(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.8) then
                     ct3(kx,ky)=ct3(kx,ky)+1
                  end if                            
                end if
@@ -2482,6 +3760,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.1.and.kx.eq.4) then
                     ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.2) then
@@ -2489,6 +3775,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.2.and.kx.eq.3) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.8) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
@@ -2498,6 +3792,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.4) then
                     ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.2) then
@@ -2505,6 +3807,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.4.and.kx.eq.3) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.8) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
@@ -2514,6 +3824,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.4) then
                     ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.2) then
@@ -2521,6 +3839,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.6.and.kx.eq.3) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.8) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
@@ -2530,6 +3856,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.4) then
                     ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.2) then
@@ -2537,6 +3871,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.8.and.kx.eq.3) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.8) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
@@ -2546,6 +3888,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.4) then
                     ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.1) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.2) then
@@ -2553,6 +3903,174 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.10.and.kx.eq.3) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.8) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.1) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.2) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.3) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.4) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.5) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.6) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.7) then
+                    ct4(kx,ky)=ct4(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.8) then
                     ct4(kx,ky)=ct4(kx,ky)+1
                  end if                         
                end if  
@@ -2566,6 +4084,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.1.and.kx.eq.4) then
                     ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.2) then
@@ -2573,6 +4099,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.2.and.kx.eq.3) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.8) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
@@ -2582,6 +4116,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.4) then
                     ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.2) then
@@ -2589,6 +4131,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.4.and.kx.eq.3) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.8) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
@@ -2598,6 +4148,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.4) then
                     ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.2) then
@@ -2605,6 +4163,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.6.and.kx.eq.3) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.8) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
@@ -2614,6 +4180,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.4) then
                     ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.2) then
@@ -2621,6 +4195,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.8.and.kx.eq.3) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.8) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
@@ -2630,6 +4212,14 @@ c ... keeping a talley on agent decisions, will print to screen below
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.4) then
                     ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.1) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.2) then
@@ -2637,6 +4227,174 @@ c ... keeping a talley on agent decisions, will print to screen below
                   else IF (ky.eq.10.and.kx.eq.3) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.8) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.1) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.2) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.3) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.4) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.5) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.6) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.7) then
+                    ct5(kx,ky)=ct5(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.8) then
                     ct5(kx,ky)=ct5(kx,ky)+1
                   end if                           
                end if 
@@ -2652,6 +4410,14 @@ c.... but not long enough to be mevac=3.....
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.1.and.kx.eq.4) then
                     ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.2) then
@@ -2659,6 +4425,14 @@ c.... but not long enough to be mevac=3.....
                   else IF (ky.eq.2.and.kx.eq.3) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.8) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
@@ -2668,6 +4442,14 @@ c.... but not long enough to be mevac=3.....
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.4) then
                     ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.2) then
@@ -2675,6 +4457,14 @@ c.... but not long enough to be mevac=3.....
                   else IF (ky.eq.4.and.kx.eq.3) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.8) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
@@ -2684,6 +4474,14 @@ c.... but not long enough to be mevac=3.....
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.4) then
                     ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.2) then
@@ -2691,6 +4489,14 @@ c.... but not long enough to be mevac=3.....
                   else IF (ky.eq.6.and.kx.eq.3) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.8) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
@@ -2700,6 +4506,14 @@ c.... but not long enough to be mevac=3.....
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.4) then
                     ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.2) then
@@ -2707,6 +4521,14 @@ c.... but not long enough to be mevac=3.....
                   else IF (ky.eq.8.and.kx.eq.3) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.8) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
@@ -2716,6 +4538,14 @@ c.... but not long enough to be mevac=3.....
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.4) then
                     ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.1) then
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.2) then
@@ -2724,7 +4554,174 @@ c.... but not long enough to be mevac=3.....
                     ct8(kx,ky)=ct8(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.4) then
                     ct8(kx,ky)=ct8(kx,ky)+1
-                  else 
+                  else IF (ky.eq.10.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.1) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.2) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.3) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.4) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.5) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.6) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.7) then
+                    ct8(kx,ky)=ct8(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.8) then
+                    ct8(kx,ky)=ct8(kx,ky)+1					
                  end if                           
                end if    
 c.... 8s are mevac=1 who are temporarily waiting for open spot.... 
@@ -2739,6 +4736,14 @@ c.... but not long enough to be mevac=3.....
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.1.and.kx.eq.4) then
                     ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.1.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.2) then
@@ -2746,6 +4751,14 @@ c.... but not long enough to be mevac=3.....
                   else IF (ky.eq.2.and.kx.eq.3) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.2.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.2.and.kx.eq.8) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
@@ -2755,6 +4768,14 @@ c.... but not long enough to be mevac=3.....
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.3.and.kx.eq.4) then
                     ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.3.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.2) then
@@ -2762,6 +4783,14 @@ c.... but not long enough to be mevac=3.....
                   else IF (ky.eq.4.and.kx.eq.3) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.4.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.4.and.kx.eq.8) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
@@ -2771,6 +4800,14 @@ c.... but not long enough to be mevac=3.....
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.5.and.kx.eq.4) then
                     ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.5.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.2) then
@@ -2778,6 +4815,14 @@ c.... but not long enough to be mevac=3.....
                   else IF (ky.eq.6.and.kx.eq.3) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.6.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.6.and.kx.eq.8) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
@@ -2787,6 +4832,14 @@ c.... but not long enough to be mevac=3.....
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.7.and.kx.eq.4) then
                     ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.7.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.2) then
@@ -2794,6 +4847,14 @@ c.... but not long enough to be mevac=3.....
                   else IF (ky.eq.8.and.kx.eq.3) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.8.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.8.and.kx.eq.8) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
@@ -2803,6 +4864,14 @@ c.... but not long enough to be mevac=3.....
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.9.and.kx.eq.4) then
                     ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.9.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.1) then
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.2) then
@@ -2811,7 +4880,174 @@ c.... but not long enough to be mevac=3.....
                     ct99(kx,ky)=ct99(kx,ky)+1
                   else IF (ky.eq.10.and.kx.eq.4) then
                     ct99(kx,ky)=ct99(kx,ky)+1
-                  else 
+                  else IF (ky.eq.10.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.10.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.11.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.12.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.13.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.14.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.15.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.16.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.17.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.18.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.19.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.1) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.2) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.3) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.4) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.5) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.6) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.7) then
+                    ct99(kx,ky)=ct99(kx,ky)+1
+                  else IF (ky.eq.20.and.kx.eq.8) then
+                    ct99(kx,ky)=ct99(kx,ky)+1                   
                  end if                           
                end if                   
                ct6(kx,ky)=ct0(kx,ky)+ct3(kx,ky)+ct4(kx,ky)
@@ -2831,22 +5067,20 @@ c             end if
             nmin=nmin+1
             if (mod(nmin,5).eq.0) write(*,*) 'completed min: ',nmin
           end if
-		  
-		  
-		  
 c. This section will PRINT out the TRAFFIC into various large N Files
-c... print out between 45min-1h..... EW Interstates 
-c          if (ntick.gt.6000.and.ntick.le.6100) then
+c... print out between 2h-2.1h..... EW Interstates 
+c. its commented out currently but this is how its done
+c          if (ntick.gt.16000.and.ntick.le.16003) then
 c            do i=1,NCELLY
-c            do ln=1,5
+c            do ln=1,7
 c              ky=1
-c                write(22,'(a1,1x,i6,1x,i6,1x,i6,1x,i5,1x,i8,4(1x,i1))') 
+c                write(69,'(a1,1x,i6,1x,i6,1x,i6,1x,i5,1x,i8,4(1x,i1))') 
 c     *             'E',ky,ntick,i,ln,ident(i,ln),
-c     *             car(i,ln),vel(i,ln),twoe(i,ln),exite(i,ln)
-c                write(22,'(a1,1x,i6,1x,i6,1x,i6,1x,i5,1x,i8,4(1x,i1))') 
+c*             car(i,ln),vel(i,ln),twoe(i,ln),exite(i,ln)
+c                write(69,'(a1,1x,i6,1x,i6,1x,i6,1x,i5,1x,i8,4(1x,i1))') 
 c     *             'W',ky,ntick,i,ln,identX(i,ln),
 c     *             carX(i,ln),velX(i,ln),twow(i,ln),exitw(i,ln)
-c            end do
+c           end do
 c            end do
 c          end if
 c          
@@ -2860,40 +5094,349 @@ c     *              '1',ky,ntick,i,lx,idente(kx,ky,i,lx),
 c     *                care(kx,ky,i,lx),vele(kx,ky,i,lx)
 c            end do   
 c            END DO
-c          end if             
+c          end if     
+
+c. here we print out - both to the screen and different fort files...
+c. information on the number of evacuees etc. summed up across grid cells 
+c. this is done every 6 hours 
+        
           if (mod(ntick,18000).eq.0) then
             write(14,*) nmin/60,cnt0*4,cnt1*4,cnt2*4,cnt3*4,cnt4*4,
      *               cnt5*4,cnt8*4,cnt99*4
             write(15,*) 'nmin',nmin,'hour',nmin/60
             write(15,*) 'spots avail, used'
-            do ly=11,4,-1
+            do ly=21,4,-1
               write(15,*) ly,
-     *          ((maxspots(lx,ly)-spt(lx,ly))*4,lx=1,4),
-     *          (spt(lx,ly)*4,lx=1,4)
+     *          ((maxspots(lx,ly)-spt(lx,ly))*4,lx=1,8),
+     *          (spt(lx,ly)*4,lx=1,8)
             end do
             write(15,*) '%evac //%left//%wait//%gave up'            
-            do ky=10,1,-1
-             write(15,*) ky,(((ct11(kx,ky)*100)/ct12(kx,ky)),kx=1,4),
-     *          ((ct2(kx,ky)*100)/ct10(kx,ky),kx=1,4),
-     *          ((ct9(kx,ky)*100)/ct10(kx,ky),kx=1,4),
-     *          ((ct3(kx,ky)*100)/ct10(kx,ky),kx=1,4)            
+            do ky=20,1,-1
+             write(15,*) ky,(((ct11(kx,ky)*100)/ct12(kx,ky)),kx=1,8),
+     *          ((ct2(kx,ky)*100)/ct10(kx,ky),kx=1,8),
+     *          ((ct9(kx,ky)*100)/ct10(kx,ky),kx=1,8),
+     *          ((ct3(kx,ky)*100)/ct10(kx,ky),kx=1,8)            
             end do
             write(15,*) '%notdeciding'            
-            do ky=10,1,-1
-             write(15,*) ky,(((ct99(kx,ky)*100)/ct10(kx,ky)),kx=1,4)           
+            do ky=20,1,-1
+             write(15,*) ky,(((ct99(kx,ky)*100)/ct10(kx,ky)),kx=1,8)           
             end do
           end if 
-		  
+
+c. this generates some files at different time periods that i convert to csv files
+c. and visualize the evacuation over time in python
+
+           if (ntick.eq.(18000*2)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(27,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(27,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*3)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(28,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(28,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do    
+           end if
+           if (ntick.eq.(18000*4)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(29,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(29,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*5)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(30,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(30,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*6)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(31,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(31,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+		     if (ntick.eq.(18000*7)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(32,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(32,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*8)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(33,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(33,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*9)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(34,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(34,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*10)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(35,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(35,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*11)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(36,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(36,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do    
+           end if
+           if (ntick.eq.(18000*12)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(37,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(37,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*13)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(38,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(38,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*14)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(39,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(39,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*15)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(40,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(40,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*16)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(41,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(41,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*17)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(42,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(42,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*18)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(43,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(43,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*19)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(44,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(44,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*20)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(45,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(45,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do    
+           end if
+           if (ntick.eq.(18000*21)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(46,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(46,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
+           if (ntick.eq.(18000*22)) then
+             do ky=1,10
+                do kx=1,8              
+                   write(47,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do 
+             do ky=11,20
+                do kx=1,8              
+                   write(47,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do   
+           end if
            if (ntick.eq.(18000*23)) then
              do ky=1,10
-                do kx=1,4              
+                do kx=1,8              
                    write(48,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
      *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
                 end do
              end do 
-		   end if 
-		  
-c. This section will print out an update to the screen 
+             do ky=11,20
+                do kx=1,8              
+                   write(48,*) kx,ky,((ct2(kx,ky)*100)/ct10(kx,ky)),
+     *          	             ((ct3(kx,ky)*100)/ct10(kx,ky))				
+                end do
+             end do    
+           end if
+		   
+c. This section will print out an update to the screen every hour
+c. these are total stats across all grid cells
           if (mod(ntick,3000).eq.0) then
             write(*,*) 'Total pop in risk zones'            
             write(*,*) (cnt0+cnt1+cnt2+cnt3+cnt4+cnt5+cnt8+cnt99)*4
@@ -2942,54 +5485,82 @@ c. This section will print out an update to the screen
      *         int((cnt0+cnt1+cnt2+cnt3+cnt4+cnt5+cnt8+cnt99)*4),
      *         int(cnt0*4),int(cnt1*4),int(cnt2*4),int(cnt3*4),
      *         int(cnt4*4),int(cnt5*4),int(cnt8*4),int(cnt99*4)
-            do ly=11,4,-1
-              write(*,*) ly,(maxspots(lx,ly)*4,lx=1,4),
-     *          ((maxspots(lx,ly)-spt(lx,ly))*4,lx=1,4),
-     *          (spt(lx,ly)*4,lx=1,4)
-c     *          ((spt(lx,ly)*100/maxspots(lx,ly)),lx=1,4)
-              write(10,*) ly,(maxspots(lx,ly)*4,lx=1,4),
-     *          ((maxspots(lx,ly)-spt(lx,ly))*4,lx=1,4),
-     *          (spt(lx,ly)*4,lx=1,4)
+            do ly=21,8,-1
+              write(*,*) ly,(maxspots(lx,ly)*4,lx=1,8),
+     *          ((maxspots(lx,ly)-spt(lx,ly))*4,lx=1,8)
+              write(10,*) ly,(maxspots(lx,ly)*4,lx=1,8),
+     *          ((maxspots(lx,ly)-spt(lx,ly))*4,lx=1,8)
             end do
-            write(*,*) 'Staying // left   // look4spot // gave up'
-            write(10,*) 'Staying // left // look4spot // gave up'
+           write(*,*) 'spots taken'
+            write(10,*) 'spots taken'
+            do ly=21,8,-1
+              write(*,*) ly,
+     *          (spt(lx,ly)*4,lx=1,8)
+              write(10,*) ly,
+     *          (spt(lx,ly)*4,lx=1,8)
+            end do
+            write(*,*) 'Staying // left'
+            write(10,*) 'Staying // left'
             nsum=0
-            do ky=10,1,-1
-              write(*,*) ky,(ct6(kx,ky)*4,kx=1,4),
-     *          (ct2(kx,ky)*4,kx=1,4),(ct8(kx,ky)*4,kx=1,4), 
-     *          (ct3(kx,ky)*4,kx=1,4)
+            do ky=20,1,-1
+              write(*,*) ky,(ct6(kx,ky)*4,kx=1,8),
+     *          (ct2(kx,ky)*4,kx=1,8)
               write(10,*) ky,(ct6(kx,ky)*4,kx=1,4),
-     *          (ct2(kx,ky)*4,kx=1,4),(ct8(kx,ky)*4,kx=1,4),
-     *          (ct3(kx,ky)*4,kx=1,4)
+     *          (ct2(kx,ky)*4,kx=1,8)
 c ... figure left at risk
               if (nmin.eq.11520.and.ivac.eq.1) then
-                if (ky.le.10) then
-                  do kx=1,4
+                if (ky.le.20) then
+                  do kx=1,8
+                    nsum=nsum+npop(kx,ky)
+                  end do
+                end if
+              end if
+            end do
+            write(*,*) 'look4spot // gave up'
+            write(10,*) 'look4spot // gave up'
+            nsum=0
+            do ky=20,1,-1
+              write(*,*) ky,
+     *          (ct8(kx,ky)*4,kx=1,8), 
+     *          (ct3(kx,ky)*4,kx=1,8)
+              write(10,*) ky,
+     *          (ct8(kx,ky)*4,kx=1,8),
+     *          (ct3(kx,ky)*4,kx=1,8)
+c ... figure left at risk
+              if (nmin.eq.11520.and.ivac.eq.1) then
+                if (ky.le.20) then
+                  do kx=1,8
                     nsum=nsum+npop(kx,ky)
                   end do
                 end if
               end if
             end do
             nsum=0
-              write(*,*) '%evac // %left   // %wait // %gave up'
-              write(10,*) '%evac // %left // %wait // %gave up'            
-            do ky=10,1,-1
-              write(*,*) ky,(((ct11(kx,ky)*100)/ct12(kx,ky)),kx=1,4),
-     *          ((ct2(kx,ky)*100)/ct10(kx,ky),kx=1,4),
-     *          ((ct9(kx,ky)*100)/ct10(kx,ky),kx=1,4), 
-     *          ((ct3(kx,ky)*100)/ct10(kx,ky),kx=1,4)
-            write(10,*) ky,(((ct11(kx,ky)*100)/ct12(kx,ky)),kx=1,4),
-     *          ((ct2(kx,ky)*100)/ct10(kx,ky),kx=1,4),
-     *          ((ct9(kx,ky)*100)/ct10(kx,ky),kx=1,4),
-     *          ((ct3(kx,ky)*100)/ct10(kx,ky),kx=1,4)            
+              write(*,*) '%evac // %left'
+              write(10,*) '%evac // %left'            
+            do ky=20,1,-1
+              write(*,*) ky,(((ct11(kx,ky)*100)/ct12(kx,ky)),kx=1,8),
+     *          ((ct2(kx,ky)*100)/ct10(kx,ky),kx=1,8)
+            write(10,*) ky,(((ct11(kx,ky)*100)/ct12(kx,ky)),kx=1,8),
+     *          ((ct2(kx,ky)*100)/ct10(kx,ky),kx=1,8)           
+            end do
+              write(*,*) '%wait // %gave up'
+              write(10,*) '%wait // %gave up'            
+            do ky=20,1,-1
+              write(*,*) ky,
+     *          ((ct9(kx,ky)*100)/ct10(kx,ky),kx=1,8), 
+     *          ((ct3(kx,ky)*100)/ct10(kx,ky),kx=1,8)
+            write(10,*) ky,
+     *          ((ct9(kx,ky)*100)/ct10(kx,ky),kx=1,8),
+     *          ((ct3(kx,ky)*100)/ct10(kx,ky),kx=1,8)            
             end do
               write(*,*) '%notdecidingyet, %decidetostay'
               write(10,*) '%notdecidingyet,%decidetostay'            
-            do ky=10,1,-1
-              write(*,*) ky,(((ct99(kx,ky)*100)/ct10(kx,ky)),kx=1,4),
-     *          ((ct0(kx,ky)*100)/ct10(kx,ky),kx=1,4)
-              write(10,*) ky,(((ct99(kx,ky)*100)/ct10(kx,ky)),kx=1,4),     
-     *          ((ct0(kx,ky)*100)/ct10(kx,ky),kx=1,4)              
+            do ky=20,1,-1
+              write(*,*) ky,(((ct99(kx,ky)*100)/ct10(kx,ky)),kx=1,8),
+     *          ((ct0(kx,ky)*100)/ct10(kx,ky),kx=1,8)
+              write(10,*) ky,(((ct99(kx,ky)*100)/ct10(kx,ky)),kx=1,8),     
+     *          ((ct0(kx,ky)*100)/ct10(kx,ky),kx=1,8)              
             end do            
 c ... still on road
             numE=0
@@ -3053,21 +5624,31 @@ c ... still on road
             end do 
 			write(*,*) 'Still enroute on SW: ',numSW
             write(10,*) 'Still enrouteon SW: ',numSW
+			
+			
+            DO le=1,3
+            ky=10
+            do kx=1,8
+              do i=1,NCELLX
+                numMW=numMW+carpmw(kx,ky,i,le)
+              end do
+            end do   
+			END DO 
+            write(*,*) 'Still enroute on MW: ',numMW
+            write(10,*) 'Still enroute on MW: ',numMW
             nevac=0
           end if
           if (nmin.eq.11520) goto 102
 
        end do
-	   
-	   
+
  102   continue
        stop
        end
-	   
        subroutine ABM(jinit,npop2,wrisk,srisk,rrisk,mevac,
      *     pevac,socio,age,nocar,mobl,agewt,
      *     wwt,swt,rwt,barr,mobwt,strmwt,ewt,tstoa)  
-       PARAMETER (NCELLX=3500,NCELLY=35000,NX=4,NY=10,nVMX=5,nVMX2=3,
+       PARAMETER (NCELLX=1750,NCELLY=35000,NX=8,NY=20,nVMX=5,nVMX2=3,
      *   RLC=7.5,DT=1.2,RP=0.35,RA=0.00005)
 
 c... Each grouping has the following attributes:
@@ -3087,27 +5668,32 @@ c ... information for evacuation decision-making algorithm
 
 c
        integer npop2(NX,NY)
-       integer mevac(NX,NY,512100)
+c. mevac is a variable here that tracks the evacuation status 	   
+       integer mevac(NX,NY,295355)
+c. these values come from the npop file 	   
        integer socio(NX,NY),age(NX,NY),nocar(NX,NY),mobl(NX,NY)  
-       integer socios(NX,NY,512100),ages(NX,NY,512100)
-       integer mobls(NX,NY,512100),wrisk(NX,NY),srisk(NX,NY)
-       integer rrisk(NX,NY),pevac(NX,NY,512100)
-       integer storm(NX,NY,512100),agewt(NX,NY,512100)
-       integer wwt(NX,NY,512100),swt(NX,NY,512100),rwt(NX,NY,512100) 
-       integer barr(NX,NY,512100),mobwt(NX,NY,512100)     
-       integer strmwt(NX,NY,512100),ewt(NX,NY,512100)
+       integer socios(NX,NY,295355),ages(NX,NY,295355)
+       integer mobls(NX,NY,295355)
+       integer wrisk(NX,NY),srisk(NX,NY),rrisk(NX,NY)
+c. here are some variables that go into the evacuation decision algorithm	   
+       integer pevac(NX,NY,295355)
+       integer storm(NX,NY,295355),agewt(NX,NY,295355)
+       integer wwt(NX,NY,295355),swt(NX,NY,295355),rwt(NX,NY,295355) 
+       integer barr(NX,NY,295355),mobwt(NX,NY,295355)     
+       integer strmwt(NX,NY,295355),ewt(NX,NY,295355)
        integer tstoa(NX,NY)
 c
 c. This section assigns group characteristics THE FIRST CALL ONLY
        if (jinit.eq.1) then
          do n1=1,NX
          do n2=1,NY
-c ... set the characteristics for a group of 2
+c ... set the characteristics for a group of 4
 c ... aka each group will have one common set of char
            n3e=npop2(n1,n2)/4
            do n3=1,n3e
              mevac(n1,n2,n3)=99
-c .... light weights            
+c .... forecast weights  
+c .. weights are informed by literature and various sensitivity analyses           
              wwt(n1,n2,n3)=1+((rand()*0.9)+0.10)*100
              swt(n1,n2,n3)=1+rand()*100
              rwt(n1,n2,n3)=1+(rand()*0.9)*100 
@@ -3119,7 +5705,7 @@ c              agewt(n1,n2,n3)=0
 c..... assigning weights for prisk
               strmwt(n1,n2,n3)=1+(rand()*0.8)*100
               ewt(n1,n2,n3)=1+(rand())*100    
-c... mobile home binary assignments              
+c... assigning those who live in mobile homes versus not. percentages informed by spatial social data               
              if (mobl(n1,n2).eq.1) then 
                 if (rand().le.0.05) then
                    mtemp=1
@@ -3157,7 +5743,7 @@ c... mobile home binary assignments
              end if             
 c.... combining mobile home tile and weights
              mobls(n1,n2,n3)=mtemp*mobwt(n1,n2,n3)
-c.... creating household barriers based on tiles            
+c.... creating household barriers based on social vulnerability data by grid cell             
               if (socio(n1,n2).eq.1) then
                  barr(n1,n2,n3)=((rand())+0.06)*100 
               else if (socio(n1,n2).eq.2) then
@@ -3222,8 +5808,9 @@ c... only if people are at home and want to change their mind (mevac=0)
            n3e=npop2(n1,n2)/4 
            do n3=1,n3e  
            if (mevac(n1,n2,n3).eq.0) then          
-               if (tstoa(n1,n2).ge.120) then
+              if (tstoa(n1,n2).ge.120) then
               barrs=barr(n1,n2,n3)+30
+c. time component exists for barriers... i.e., gets smaller over time 			  
               end if       
               if (tstoa(n1,n2).lt.120.and.tstoa(n1,n2).ge.114) then
               barrs=barr(n1,n2,n3)+26
@@ -3269,7 +5856,7 @@ c... only if people are at home and want to change their mind (mevac=0)
               end if				  
               if (tstoa(n1,n2).lt.36) then
               barrs=barr(n1,n2,n3)
-              end if      
+              end if     
              mob=mobls(n1,n2,n3)
              if (wrisk(n1,n2).gt.9) then
                   mob=mob*0.9
@@ -3299,10 +5886,13 @@ c... only if people are at home and want to change their mind (mevac=0)
                   mob=mob*0.1
              end if 	 
              prisk=0
+c. wind, surge, and rain risk... combining the forecast values by grid cell with weights 			 
              w=((wrisk(n1,n2)-1)*0.4*33*(wwt(n1,n2,n3)))*0.01
              s=((srisk(n1,n2)-1)*0.4*33*(swt(n1,n2,n3)))*0.01
              r=((rrisk(n1,n2)-1)*0.4*33*(rwt(n1,n2,n3)))*0.01
              haz=max(w,s,r)
+c. combining risk with warning info and household characteristics 	
+c mevac=1 means evacuation decision made to leave, 0 is decision to stay 		 
              a=age(n1,n2)*20*(agewt(n1,n2,n3)*0.01)
              prisk=(haz*strmwt(n1,n2,n3)*0.01)+
      *          (pevac(n1,n2,n3)*ewt(n1,n2,n3))+
