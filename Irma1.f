@@ -1,72 +1,68 @@
         program Traff_all  
 
-c     Model purpose
-c     Called FLEE (Forecasting Laboratory for Exploring the Evacuation-system), this agent-based model simulates the evacuation response to hurricane forecasts. 
-c     In particular, it serves as a virtual laboratory to explore the dynamics of the hurricane forecast-warning-evacuation system 
+!> \brief Model purpose
+!> Called FLEE (Forecasting Laboratory for Exploring the Evacuation-system), this agent-based model simulates the evacuation response to hurricane forecasts.
+!> In particular, it serves as a virtual laboratory to explore the dynamics of the hurricane forecast-warning-evacuation system
 
-c     Model inputs
-c     Forecasts- Every 6 hours in the model, this program will ingest forecast files (excel inputs e.g., ADV26), located in the same folder as this .f file.
-c     The files contain the wind, surge, and rain risk across the model, presented on a 0-10 scale. Collectively, they simulate an evolving hurricane forecast scenario. 
-c     Risk files are seperately generated from archived forecasts from the National Hurricane Center including the hurricane's track, intensity, and the cone of uncertainty. 
+!> \section Model inputs
+!> Forecasts- Every 6 hours in the model, this program will ingest forecast files (excel inputs e.g., ADV26), located in the same folder as this .f file.
+!> The files contain the wind, surge, and rain risk across the model, presented on a 0-10 scale. Collectively, they simulate an evolving hurricane forecast scenario.
+!> Risk files are seperately generated from archived forecasts from the National Hurricane Center including the hurricane's track, intensity, and the cone of uncertainty.
 
-c     Built environment - A second input is the npop.txt file. This has information on the "people" side of the model, such as how many people reside in the model and where. Other info includes 
-c     the amount of time it takes to evacuate each grid cell (clerance times), inundation potential (based on NHC storm surge data), and the average characteristics of people in a grid cell
-c     (based on social vulnerability data form the CDC). These variables are static, meaning they are only defined once.  
+!> \section Built environment
+!> A second input is the npop.txt file. This has information on the "people" side of the model, such as how many people reside in the model and where. Other info includes
+!> the amount of time it takes to evacuate each grid cell (clerance times), inundation potential (based on NHC storm surge data), and the average characteristics of people in a grid cell
+!> (based on social vulnerability data form the CDC). These variables are static, meaning they are only defined once.
 
-c     The virtual world
-c     A NXW x NYH grid of tile (8x20) representing the N-S axis of the Florida peninsula. The population, based on numbers in the
-c     npop file, are geographically distributed in such a way to simulate the actual population of Florida. For example, the population centers of Miami and Tampa are
-c     distinguishable in the model. To create this virtual world, geospatial population and social datasets were projected onto the agent-based model grid using GIS. 
-c     While idealized, it makes the FLEE's virtual world "Florida-like" 
+!> \section The virtual world
+!> A NXW x NYH grid of tile (8x20) representing the N-S axis of the Florida peninsula. The population, based on numbers in the
+!> npop file, are geographically distributed in such a way to simulate the actual population of Florida. For example, the population centers of Miami and Tampa are
+!> distinguishable in the model. To create this virtual world, geospatial population and social datasets were projected onto the agent-based model grid using GIS.
+!> While idealized, it makes the FLEE's virtual world "Florida-like"
 
-c     Agents
-c     There are three primary types of agents in FLEE. 
+!> \section Agents
+!> There are three primary types of agents in FLEE.
+!> (1) Emergency manager agents. For each grid cell, there is one emergency manager agent who make a
+!> decision about whether or not to issue evacuation order for their grid cell (and when). That decision is revisited every hour, based on the forecast risk at its grid cell,
+!> the estimated time of arrival of the hurricane, and their clearance times (estimated amount of time it takes to evacuate that grid cell).
+!> (2) Household agents. Each household (units of 4 people) has a unique set of characteristics known to influence evacuation decision-making. These include (a) forecast risk,
+!> (b) evacuation orders, (c) mobile home ownership, (d) car ownership, and (e) the age of the household. For c-e, household characteristics are stochastically assigned (only once, in the subroutine)
+!> in this code based on the average grid cell-level characteristcs in the npop file.
+!> Household agents make decisions about if they should evacuate, a decision they revisit every 30 minutes.
+!> That decision process is located in the subroutine at the bottom of the code.
+!> If a household decides to evacuate, they also decide where to go (a decision made once and immediately afterward). They also decide when to leave, a decision that's influenced by the storms arrival time.
+!> These decision making processes are rooted in empirical social science studies.
+!> (3) Vehicle agents. If a household decides to evacuate, they become a vehicle agent. These agents are initially placed onto an open spot on a nearby road.
+!> Vehicles accelerate when they can, maintain speed at the speed limit or when behind another car, and slow down if they must.
 
-c     (1) Emergency manager agents. For each grid cell, there is one emergency manager agent who make a  
-c     decision about whether or not to issue evacuation order for their grid cell (and when). That decision is revisited every hour, based on the forecast risk at its grid cell, 
-c     the estimated time of arrival of the hurricane, and their clearance times (estimated amount of time it takes to evacuate that grid cell). 
+!> \section Traffic model
+!> The evacuation traffic model dumps out the state at every minute of
+!> integration (50 time steps using an increment of 1.2 sec). This high-res aspect of the model is needed to simulate vehicle-vehicle interactions
+!> which can generate traffic jams.
 
-c     (2) Household agents. Each household (units of 4 people) has a unique set of characteristics known to influence evacuation decision-making. These include (a) forecast risk, 
-c     (b) evacuation orders, (c) mobile home ownership, (d) car ownership, and (e) the age of the household. For c-e, household characteristics are stochastically assigned (only once, in the subroutine)
-c     in this code based on the average grid cell-level characteristcs in the npop file. 
-c     
-c     Household agents make decisions about if they should evacuate, a decision they revisit every 30 minutes. 
-c     That decision process is located in the subroutine at the bottom of the code. 
-c     If a household decides to evacuate, they also decide where to go (a decision made once and immediately afterward). They also decide when to leave, a decision that's influenced by the storms arrival time. 
-c     These decision making processes are rooted in empirical social science studies. 
+!> \section Built environment
+!> As part of the Florida-like virtual world, idealized road networks are placed in between grid cells, some moving E-W, others moving S-N.
 
-c     (3) Vehicle agents. If a household decides to evacuate, they become a vehicle agent. These agents are initially placed onto an open spot on a nearby road. 
-c     Vehicles accelerate when they can, maintain speed at the speed limit or when behind another car, and slow down if they must.  
+!> \subsection N/S Interstates
+!> At the junction of X=8 (east Florida) is a N/S -running Interstate (5 lanes) extending from Y=1-NY where 1 is south. This is like I-95 running along FL's east coast.
+!> At the junction of X=1 (west Florida) is an identential N/S running, 5 lane interstate extending to NY=20. This is like I-75 on Florida's west coast.
 
-c     Traffic model
-c     The evacuation traffic model dumps out the state at every minute of
-c     integration (50 time steps using an increment of 1.2 sec). This high-res aspect of the model is needed to simulate vehicle-vehicle interactions
-c     which can generate traffic jams. 
+!> \subsection E/W Interstates
+!> At the base of the grid Y=1 is an E-W running Interstate (3 lanes each way). These connect the two outer interstates/
+!> At the middle of the grid Y=10 is another E-W running Interstate (3 lanes each way). This connects Tampa with Orlando.
 
-c     Built environment 
-c     As part of the Florida-like virtual world, idealized road networks are placed in between grid cells, some moving E-W, others moving S-N. 
+!> \subsection E/W Highways
+!> In between each grid cell are E-W running higways (2-lanes) that  joins the traffic from the W-E routes
+!> to the N route.
 
-c ... N/S Interstates:
-c     At the junction of X=8 (east Florida) is a N/S -running Interstate (5 lanes) extending from Y=1-NY where 1 is south. This is like I-95 running along FL's east coast.
-c     At the junction of X=1 (west Florida) is an identential N/S running, 5 lane interstate extending to NY=20. This is like I-75 on Florida's west coast. 
+!> Each highway consists of NCELL=3500 road-lengths (road length = 7.5m so NCELL = 26.25 km)
+!> This means the grid is about 110 km wide and 262 km tall -- roughly FL panhandle-like.
 
-c ... E/W Interstates
-c     At the base of the grid Y=1 is an E-W running Interstate (3 lanes each way). These connect the two outer interstates/ 
-c.    At the middle of the grid Y=10 is another E-W running Interstate (3 lanes each way). This connects Tampa with Orlando. 
-
-c ... E/W Highways 
-c.    In between each grid cell are E-W running higways (2-lanes) that  joins the traffic from the W-E routes
-c     to the N route.
-
-c     Each highway consists of NCELL=3500 road-lengths (road length = 7.5m so NCELL = 26.25 km)
-c     This means the grid is about 110 km wide and 262 km tall -- roughly FL panhandle-like.  
-
-c     Setting initial parameters and the sizes of arrays
-c     We set the interstate speed limit (nVMX) at 5 road-lengths per time step (1.2 s) which is about 70 mph. 
-c     We set the highway speed limit (nVMX2) to 3 road-lengths per time step (1.2s) which is about 45 mph
-c     We place random accidents (RA) on the major interstates every 2.7 hours or so. 
-c     About 35% of cars will exhibit some "chaotic" or random movements (RP) which can trigger abrubt slowdowns/jams
-
+!> \section Setting initial parameters and the sizes of arrays
+!> We set the interstate speed limit (nVMX) at 5 road-lengths per time step (1.2 s) which is about 70 mph.
+!> We set the highway speed limit (nVMX2) to 3 road-lengths per time step (1.2s) which is about 45 mph
+!> We place random accidents (RA) on the major interstates every 2.7 hours or so.
+!> About 35% of cars will exhibit some "chaotic" or random movements (RP) which can trigger abrubt slowdowns/jams
        PARAMETER (NCELLX=1750,NCELLY=35000,NX=8,NY=20,nVMX=5,nVMX2=3,
      *   RLC=7.5,DT=1.2,RP=0.05,RA=0.00005)
 
@@ -5645,31 +5641,28 @@ c ... still on road
  102   continue
        stop
        end
+
+!> \brief This subroutine is responsible for making evacuation descions for household agents 
+!> \brief   ... Each grouping has the following attributes:
+!> \brief  Identifier (this is unique to each group and is used for tracking/updating)
+!> \brief   Links (list of group identity connections – list other identifiers)
+!> \brief ... All of the above feeds into go/no-go decision. Each decision is made every 30 minutes when the ABM is called. 
+!> \brief   mevac = 0 when the decision is to stay
+!> \brief   mevac = 1 when the decision is to go. 
+!> \brief   mevac = 2 when the group has left
+!> \brief   mevac = 3 when the group has tried to leave but gave up (wait too long)
+!> \brief   mevac = 4 are those that simply cannot leave due to lack of car etc. 
+!> \brief   mevac = 5 are those who evac but go to LOCAL SHELTER
+!> \brief   mevac = 8 are those that are going but looking for spot on road
        subroutine ABM(jinit,npop2,wrisk,srisk,rrisk,mevac,
      *     pevac,socio,age,nocar,mobl,agewt,
      *     wwt,swt,rwt,barr,mobwt,strmwt,ewt,tstoa)  
        PARAMETER (NCELLX=1750,NCELLY=35000,NX=8,NY=20,nVMX=5,nVMX2=3,
      *   RLC=7.5,DT=1.2,RP=0.35,RA=0.00005)
 
-c... Each grouping has the following attributes:
-c   Identifier (this is unique to each group and is used for tracking/updating)
-c   Links (list of group identity connections – list other identifiers)
-c
-c... All of the above feeds into go/no-go decision. Each decision is made every 30 minutes when the ABM is called. 
-c   mevac = 0 when the decision is to stay
-c   mevac = 1 when the decision is to go. 
-c   mevac = 2 when the group has left
-c   mevac = 3 when the group has tried to leave but gave up (wait too long)
-c   mevac = 4 are those that simply cannot leave due to lack of car etc. 
-c   mevac = 5 are those who evac but go to LOCAL SHELTER
-c   mevac = 8 are those that are going but looking for spot on road
-
-c ... information for evacuation decision-making algorithm 
-
-c
-       integer npop2(NX,NY)
-c. mevac is a variable here that tracks the evacuation status 	   
-       integer mevac(NX,NY,295355)
+       integer jinit                    !< control varaible
+       integer npop2(NX,NY)             !< npop2 is a variable that does x
+       integer mevac(NX,NY,295355)      !< tracks the evacuation status
 c. these values come from the npop file 	   
        integer socio(NX,NY),age(NX,NY),nocar(NX,NY),mobl(NX,NY)  
        integer socios(NX,NY,295355),ages(NX,NY,295355)
